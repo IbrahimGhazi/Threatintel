@@ -1,0 +1,452 @@
+# ============================================================
+# Threat Intelligence Platform – Docker Compose
+# ============================================================
+# Services:
+#   Core Data:   postgres, redis, nats
+#   Platform:    api, ingestion, enrichment, icap, correlation
+#   Frontend:    frontend
+#   Proxy:       nginx
+#   Observability: prometheus, grafana
+# ============================================================
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+x-restart: &default-restart
+  restart: unless-stopped
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 30s
+
+networks:
+  ti-internal:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+  ti-dmz:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+  nats-data:
+  prometheus-data:
+  grafana-data:
+  geoip-data:
+  sandbox-files:
+
+services:
+
+  # ──────────────────────────────────────────────
+  # CORE DATA LAYER
+  # ──────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    <<: *default-restart
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-tiplatform}
+      POSTGRES_USER: ${POSTGRES_USER:-tiplatform}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - ti-internal
+    ports:
+      - "${POSTGRES_EXPOSE_PORT:-127.0.0.1:5432}:5432"
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tiplatform} -d ${POSTGRES_DB:-tiplatform}"]
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  redis:
+    image: redis:7-alpine
+    <<: *default-restart
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --maxmemory ${REDIS_MAX_MEMORY:-512mb}
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --appendfsync everysec
+    volumes:
+      - redis-data:/data
+    networks:
+      - ti-internal
+    ports:
+      - "${REDIS_EXPOSE_PORT:-127.0.0.1:6379}:6379"
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+
+  nats:
+    image: nats:2.10-alpine
+    <<: *default-restart
+    command: >
+      -js
+      -sd /data
+      -m 8222
+      --user ${NATS_USER:-tiplatform}
+      --pass ${NATS_PASSWORD}
+    volumes:
+      - nats-data:/data
+    networks:
+      - ti-internal
+    ports:
+      - "${NATS_EXPOSE_PORT:-127.0.0.1:4222}:4222"
+      - "127.0.0.1:8222:8222"
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8222/healthz || exit 1"]
+    logging: *default-logging
+
+  # ──────────────────────────────────────────────
+  # PLATFORM SERVICES
+  # ──────────────────────────────────────────────
+
+  sandbox-analysis:
+    build:
+      context: ./services/sandbox/analysis
+      dockerfile: Dockerfile
+    image: ${SANDBOX_ANALYSIS_IMAGE:-ti-sandbox-analysis:latest}
+    # This service exists only to pre-build the analysis image so the sandbox
+    # worker doesn't have to build it at runtime (which would fail silently).
+    # It exits immediately after the build; the sandbox worker uses the image.
+    command: ["true"]
+    restart: "no"
+    networks:
+      - ti-internal
+
+  sandbox:
+    build:
+      context: ./services/sandbox
+      dockerfile: Dockerfile
+    <<: *default-restart
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-tiplatform}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-tiplatform}
+      - NATS_URL=nats://${NATS_USER:-tiplatform}:${NATS_PASSWORD}@nats:4222
+      - SANDBOX_ENGINE=${SANDBOX_ENGINE:-mock}
+      - SANDBOX_URL=${SANDBOX_URL:-http://localhost:8000}
+      - VIRUSTOTAL_API_KEY=${VIRUSTOTAL_API_KEY:-}
+      - API_URL=http://api:8000
+      - API_KEY=${API_KEY}
+      - SANDBOX_FILES_DIR=/sandbox-files
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/5
+      - SANDBOX_PROGRESS_REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - SANDBOX_ANALYSIS_IMAGE=${SANDBOX_ANALYSIS_IMAGE:-ti-sandbox-analysis:latest}
+      - SANDBOX_ANALYSIS_TIMEOUT=${SANDBOX_ANALYSIS_TIMEOUT:-120}
+      - LOCAL_SANDBOX_DYNAMIC=${LOCAL_SANDBOX_DYNAMIC:-true}
+    volumes:
+      - sandbox-files:/sandbox-files
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - ti-internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      sandbox-analysis:
+        condition: service_completed_successfully
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  api:
+    build:
+      context: ./services/api
+      dockerfile: Dockerfile
+      target: production
+    <<: *default-restart
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-tiplatform}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-tiplatform}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - NATS_URL=nats://${NATS_USER:-tiplatform}:${NATS_PASSWORD}@nats:4222
+      - SECRET_KEY=${SECRET_KEY}
+      - API_KEY=${API_KEY}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+      - SANDBOX_ENABLED=${SANDBOX_ENABLED:-true}
+      - SANDBOX_ENGINE=${SANDBOX_ENGINE:-mock}
+      - SANDBOX_FILES_DIR=/sandbox-files
+      - SANDBOX_PROGRESS_REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - KNOWN_DEVICE_IPS=${KNOWN_DEVICE_IPS:-}
+    volumes:
+      - sandbox-files:/sandbox-files
+    networks:
+      - ti-internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  ingestion:
+    build:
+      context: ./services/ingestion
+      dockerfile: Dockerfile
+    <<: *default-restart
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-tiplatform}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-tiplatform}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/1
+      - NATS_URL=nats://${NATS_USER:-tiplatform}:${NATS_PASSWORD}@nats:4222
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ABUSEIPDB_API_KEY=${ABUSEIPDB_API_KEY:-}
+      - OTX_API_KEY=${OTX_API_KEY:-}
+      - THREATFOX_API_KEY=${THREATFOX_API_KEY:-}
+      - MALWAREBAZAAR_API_KEY=${MALWAREBAZAAR_API_KEY:-}
+      - URLHAUS_ENABLED=${URLHAUS_ENABLED:-true}
+      - THREATFOX_ENABLED=${THREATFOX_ENABLED:-true}
+      - MALWAREBAZAAR_ENABLED=${MALWAREBAZAAR_ENABLED:-true}
+      - OPENPHISH_ENABLED=${OPENPHISH_ENABLED:-true}
+      - FEED_POLL_INTERVAL=${FEED_POLL_INTERVAL:-3600}
+    networks:
+      - ti-internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  enrichment:
+    build:
+      context: ./services/enrichment
+      dockerfile: Dockerfile
+    <<: *default-restart
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-tiplatform}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-tiplatform}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/2
+      - NATS_URL=nats://${NATS_USER:-tiplatform}:${NATS_PASSWORD}@nats:4222
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - GEOIP_DB_PATH=/geoip/GeoLite2-City.mmdb
+      - GEOIP_ASN_DB_PATH=/geoip/GeoLite2-ASN.mmdb
+      - ENRICHMENT_WORKERS=${ENRICHMENT_WORKERS:-4}
+    volumes:
+      - geoip-data:/geoip:ro
+    networks:
+      - ti-internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  icap:
+    build:
+      context: ./services/icap
+      dockerfile: Dockerfile
+    <<: *default-restart
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/3
+      - API_URL=http://api:8000
+      - API_KEY=${API_KEY}
+      - ICAP_HOST=0.0.0.0
+      - ICAP_PORT=1344
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SANDBOX_ENABLED=${SANDBOX_ENABLED:-false}
+      - SANDBOX_URL=${SANDBOX_URL:-}
+      - ICAP_MAX_CONNECTIONS=${ICAP_MAX_CONNECTIONS:-100}
+    networks:
+      - ti-internal
+      - ti-dmz
+    ports:
+      - "${ICAP_EXPOSE_PORT:-0.0.0.0:1344}:1344"
+    depends_on:
+      redis:
+        condition: service_healthy
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  logserver:
+    build:
+      context: ./services/logserver
+      dockerfile: Dockerfile
+    <<: *default-restart
+    environment:
+      - API_URL=http://api:8000
+      - API_KEY=${API_KEY}
+      - SYSLOG_UDP_PORT=${SYSLOG_UDP_PORT:-514}
+      - SYSLOG_TCP_PORT=${SYSLOG_TCP_PORT:-514}
+      - LOGSERVER_HTTP_PORT=9514
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    ports:
+      - "${SYSLOG_EXPOSE_UDP:-0.0.0.0:514}:514/udp"
+      - "${SYSLOG_EXPOSE_TCP:-0.0.0.0:514}:514/tcp"
+      - "0.0.0.0:9514:9514"
+    networks:
+      - ti-internal
+      - ti-dmz
+    depends_on:
+      api:
+        condition: service_healthy
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  correlation:
+    build:
+      context: ./services/correlation
+      dockerfile: Dockerfile
+    <<: *default-restart
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-tiplatform}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-tiplatform}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/4
+      - NATS_URL=nats://${NATS_USER:-tiplatform}:${NATS_PASSWORD}@nats:4222
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ALERT_MIN_CONFIDENCE=${ALERT_MIN_CONFIDENCE:-60}
+      - API_KEY=${API_KEY}
+      - API_URL=http://api:8000
+      - KNOWN_DEVICE_IPS=${KNOWN_DEVICE_IPS:-}
+    networks:
+      - ti-internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  # ──────────────────────────────────────────────
+  # FRONTEND
+  # ──────────────────────────────────────────────
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api}
+        NEXT_PUBLIC_API_KEY: ${API_KEY}
+    <<: *default-restart
+    environment:
+      - NODE_ENV=production
+    networks:
+      - ti-internal
+    depends_on:
+      - api
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  # ──────────────────────────────────────────────
+  # REVERSE PROXY
+  # ──────────────────────────────────────────────
+
+  nginx:
+    image: nginx:1.25-alpine
+    <<: *default-restart
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./infra/nginx/ssl:/etc/nginx/ssl:ro
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    networks:
+      - ti-internal
+      - ti-dmz
+    depends_on:
+      - api
+      - frontend
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "nginx", "-t"]
+    logging: *default-logging
+
+  # ──────────────────────────────────────────────
+  # OBSERVABILITY
+  # ──────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    <<: *default-restart
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - ti-internal
+    ports:
+      - "127.0.0.1:9090:9090"
+    logging: *default-logging
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    <<: *default-restart
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_DOMAIN=${GRAFANA_DOMAIN:-localhost}
+      - GF_INSTALL_PLUGINS=grafana-clock-panel
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - ti-internal
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      - prometheus
+    logging: *default-logging
