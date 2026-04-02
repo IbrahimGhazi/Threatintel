@@ -348,6 +348,19 @@ services:
       - API_KEY=${API_KEY}
       - API_URL=http://api:8000
       - KNOWN_DEVICE_IPS=${KNOWN_DEVICE_IPS:-}
+      # ── Adaptive baseline & rule-tuning settings ──
+      # Minimum log samples before anomaly detection activates per entity
+      - BASELINE_MIN_SAMPLES=${BASELINE_MIN_SAMPLES:-20}
+      # Z-score threshold for anomaly detection (default: 3 standard deviations)
+      - BASELINE_Z_SCORE_THRESHOLD=${BASELINE_Z_SCORE_THRESHOLD:-3.0}
+      # How often (seconds) the correlation service flushes baselines to the DB
+      - BASELINE_FLUSH_INTERVAL=${BASELINE_FLUSH_INTERVAL:-300}
+      # Minimum alert triggers before a tuning suggestion is generated
+      - SUGGESTION_MIN_TRIGGERS=${SUGGESTION_MIN_TRIGGERS:-5}
+      # Confidence level [0-1] at which auto-apply is scheduled (default: 85%)
+      - BASELINE_AUTO_APPLY_CONFIDENCE=${BASELINE_AUTO_APPLY_CONFIDENCE:-0.85}
+      # Hours to wait after confidence threshold before auto-applying (default: 24h)
+      - BASELINE_AUTO_APPLY_DELAY_HOURS=${BASELINE_AUTO_APPLY_DELAY_HOURS:-24}
     networks:
       - ti-internal
     depends_on:
