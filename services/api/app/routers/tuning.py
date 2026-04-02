@@ -154,7 +154,7 @@ async def accept_suggestion(
         VALUES
           (:suggestion_id, :change_type, :rule_name,
            :entity_type, :entity_value,
-           :previous_value::jsonb, :new_value::jsonb,
+           CAST(:previous_value AS jsonb), CAST(:new_value AS jsonb),
            'analyst', :reason)
     """), {
         "suggestion_id": suggestion_id,

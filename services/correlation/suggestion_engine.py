@@ -199,7 +199,7 @@ class SuggestionEngine:
                           confidence      = :confidence,
                           trigger_count   = :trigger_count,
                           rationale       = :rationale,
-                          suggested_value = :suggested_value::jsonb,
+                          suggested_value = CAST(:suggested_value AS jsonb),
                           auto_apply_at   = :auto_apply_at,
                           updated_at      = NOW()
                         WHERE id = :id
@@ -219,7 +219,7 @@ class SuggestionEngine:
                            rationale, confidence, trigger_count, auto_apply_at)
                         VALUES
                           (:suggestion_type, :category, :entity_type, :entity_value,
-                           :rule_name, :current_value::jsonb, :suggested_value::jsonb,
+                           :rule_name, CAST(:current_value AS jsonb), CAST(:suggested_value AS jsonb),
                            :rationale, :confidence, :trigger_count, :auto_apply_at)
                     """), {
                         "suggestion_type": "increase_threshold",
@@ -287,7 +287,7 @@ class SuggestionEngine:
                         VALUES
                           (:suggestion_id, :change_type, :rule_name,
                            :entity_type, :entity_value,
-                           :previous_value::jsonb, :new_value::jsonb,
+                           CAST(:previous_value AS jsonb), CAST(:new_value AS jsonb),
                            'system_auto', :reason)
                     """), {
                         "suggestion_id": str(row.id),
