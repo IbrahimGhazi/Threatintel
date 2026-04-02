@@ -389,9 +389,51 @@ async def handle_log(msg, pool: asyncpg.Pool, api: httpx.AsyncClient) -> None:
     store.add(log)
     store.prune_if_due()
 
-    # Record behavioral metrics for baseline learning
-    if baseline_engine:
-        baseline_engine.extract_and_record(log)
+    # Record window-rate metrics for baseline learning.
+    # We record the CURRENT WINDOW SIZE on each event so that baselines
+    # reflect real activity levels rather than a flat 1.0 per-event flag.
+    if baseline_engine and log.src_ip:
+        src_events = list(store.by_src.get(log.src_ip, []))
+        n = float(len(src_events))
+
+        baseline_engine.record("host", log.src_ip, "connection_count_per_hour", n)
+        baseline_engine.record_subnet(log.src_ip, "connection_count_per_hour", n)
+
+        unique_dsts = float(len({e.dst_ip for e in src_events if e.dst_ip}))
+        baseline_engine.record("host", log.src_ip, "unique_destinations", unique_dsts)
+
+        unique_ports = float(len({e.dst_port for e in src_events if e.dst_port}))
+        baseline_engine.record("host", log.src_ip, "unique_ports_per_window", unique_ports)
+
+        failed = float(sum(
+            1 for e in src_events
+            if (e.status or "").lower() in ("failed", "error", "invalid", "refused")
+        ))
+        if failed:
+            baseline_engine.record("host", log.src_ip, "failed_auth_per_hour", failed)
+
+        rdp = float(sum(
+            1 for e in src_events
+            if (e.protocol or "").lower() == "rdp" or e.dst_port == 3389
+        ))
+        if rdp:
+            baseline_engine.record("host", log.src_ip, "rdp_connections", rdp)
+
+        smb = float(sum(
+            1 for e in src_events
+            if (e.protocol or "").lower() == "smb" or e.dst_port in (445, 139)
+        ))
+        if smb:
+            baseline_engine.record("host", log.src_ip, "smb_connections", smb)
+
+    if baseline_engine and log.username:
+        user_events = list(store.by_user.get(log.username, []))
+        failed_user = float(sum(
+            1 for e in user_events
+            if (e.status or "").lower() in ("failed", "error", "invalid", "refused")
+        ))
+        if failed_user:
+            baseline_engine.record("user", log.username, "failed_auth_per_hour", failed_user)
 
     # Refresh whitelist cache periodically
     await whitelist_cache.refresh(api)
