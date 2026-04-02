@@ -186,7 +186,7 @@ class SuggestionEngine:
             from sqlalchemy import text as sa_text
             async with self._db_factory() as db:
                 existing = (await db.execute(sa_text("""
-                    SELECT id FROM tuning_suggestions
+                    SELECT id, trigger_count FROM tuning_suggestions
                     WHERE rule_name    = :rule_name
                       AND entity_value = :entity_value
                       AND status       = 'pending'
@@ -194,6 +194,21 @@ class SuggestionEngine:
                 """), {"rule_name": rule_name, "entity_value": entity_value})).fetchone()
 
                 if existing:
+                    # Reconcile in-memory counter with persisted value so that
+                    # service restarts never cause the count to regress.
+                    db_count = int(existing.trigger_count or 0)
+                    if db_count > trigger_count:
+                        trigger_count = db_count + 1
+                        key = (rule_name, (entity_value or "global").lower())
+                        self._triggers[key] = trigger_count
+                        confidence    = _confidence(trigger_count)
+                        auto_apply_at = None
+                        if confidence >= AUTO_APPLY_CONFIDENCE:
+                            auto_apply_at = (
+                                datetime.now(timezone.utc)
+                                + timedelta(hours=AUTO_APPLY_DELAY_HOURS)
+                            ).isoformat()
+
                     await db.execute(sa_text("""
                         UPDATE tuning_suggestions SET
                           confidence      = :confidence,
