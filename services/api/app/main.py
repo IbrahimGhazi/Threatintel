@@ -133,17 +133,17 @@ def create_app() -> FastAPI:
     )
 
     # ── Always-present routers ────────────────────────────────────────────────
-    app.include_router(logs.router,   prefix="/api")
-    app.include_router(tuning.router, prefix="/api")
+    app.include_router(logs.router)
+    app.include_router(tuning.router)
 
     # ── Optional routers (present in main branch) ─────────────────────────────
-    if _has_indicators: app.include_router(indicators.router, prefix="/api")
-    if _has_alerts:     app.include_router(alerts.router,     prefix="/api")
-    if _has_sandbox:    app.include_router(sandbox.router,    prefix="/api")
-    if _has_feeds:      app.include_router(feeds.router,      prefix="/api")
-    if _has_edl:        app.include_router(edl.router,        prefix="/api")
-    if _has_whitelist:  app.include_router(whitelist.router,  prefix="/api")
-    if _has_stats:      app.include_router(stats.router,      prefix="/api")
+    if _has_indicators: app.include_router(indicators.router)
+    if _has_alerts:     app.include_router(alerts.router)
+    if _has_sandbox:    app.include_router(sandbox.router)
+    if _has_feeds:      app.include_router(feeds.router)
+    if _has_edl:        app.include_router(edl.router)
+    if _has_whitelist:  app.include_router(whitelist.router)
+    if _has_stats:      app.include_router(stats.router)
 
     # ── Health check ──────────────────────────────────────────────────────────
     @app.get("/health", include_in_schema=False)
