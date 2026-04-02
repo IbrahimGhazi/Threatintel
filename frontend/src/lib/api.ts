@@ -328,7 +328,7 @@ export function getBehavioralBaselines(params: {
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 export function getDashboardStats(): Promise<DashboardStats> {
-  return apiFetch("/stats");
+  return apiFetch("/stats/dashboard");
 }
 
 // ── Indicators ────────────────────────────────────────────────────────────────
