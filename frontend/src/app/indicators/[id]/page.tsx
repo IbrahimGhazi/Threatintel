@@ -5,13 +5,14 @@
  */
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { getIndicator } from "@/lib/api";
+import { getIndicator, markFalsePositive, deleteIndicator } from "@/lib/api";
 import { SeverityBadge } from "@/components/ui/SeverityBadge";
 import {
   ChevronLeft, Globe, Hash, Link2, Shield, Clock,
-  Database, Tag, AlertTriangle, CheckCircle, XCircle,
+  Database, Tag, AlertTriangle, CheckCircle, XCircle, Trash2, Flag,
 } from "lucide-react";
 import { formatDistanceToNow, format, parseISO } from "date-fns";
+import IndicatorActions from "./IndicatorActions";
 
 function Section({ title, icon: Icon, children }: {
   title: string; icon: any; children: React.ReactNode;
@@ -118,6 +119,9 @@ export default async function IndicatorDetailPage({
               {indicator.value}
             </p>
           </div>
+
+          {/* Actions */}
+          <IndicatorActions id={String(indicator.id)} isFalsePositive={!!indicator.false_positive} />
 
           {/* Confidence gauge */}
           <div className="text-center flex-shrink-0">

@@ -80,6 +80,59 @@ def _rule_to_category(rule_name: str) -> str:
     return "connection"
 
 
+async def _apply_rule_overrides(pool: Optional[asyncpg.Pool]) -> None:
+    """Read rule_overrides from DB and patch in-memory rule thresholds in rules.py."""
+    if not pool:
+        return
+    try:
+        rows = await pool.fetch("""
+            SELECT rule_name, entity_type, entity_value, threshold, window_secs
+            FROM rule_overrides
+            WHERE entity_type = 'global' OR entity_value = '*'
+        """)
+        import rules as _rules
+        for row in rows:
+            name      = row["rule_name"]
+            threshold = row["threshold"]
+            window    = row["window_secs"]
+            # Map rule_name → module-level variable names
+            _THRESHOLD_MAP = {
+                "brute_force":                 "BRUTE_FORCE_THRESHOLD",
+                "port_scan":                   "PORT_SCAN_PORTS_MIN",
+                "host_discovery":              "HOST_DISCOVERY_TARGETS_MIN",
+                "service_scan":                "SERVICE_SCAN_HOSTS_MIN",
+                "repeated_connection_attempts":"REPEATED_CONN_ATTEMPTS_MIN",
+                "blocked_connections":         "BLOCKED_CONN_THRESHOLD",
+                "c2_beaconing":                "C2_CONN_MIN",
+                "lateral_movement":            "LATERAL_HOSTS_MIN",
+            }
+            _WINDOW_MAP = {
+                "brute_force":                 "BRUTE_FORCE_WINDOW",
+                "port_scan":                   "PORT_SCAN_WINDOW",
+                "host_discovery":              "HOST_DISCOVERY_WINDOW",
+                "service_scan":                "SERVICE_SCAN_WINDOW",
+                "repeated_connection_attempts":"REPEATED_CONN_ATTEMPTS_WINDOW",
+                "blocked_connections":         "BLOCKED_CONN_WINDOW",
+                "c2_beaconing":                "C2_WINDOW",
+                "lateral_movement":            "LATERAL_WINDOW",
+            }
+            if threshold is not None and name in _THRESHOLD_MAP:
+                setattr(_rules, _THRESHOLD_MAP[name], int(threshold))
+                logger.info("Rule override: %s threshold → %d", name, int(threshold))
+            if window is not None and name in _WINDOW_MAP:
+                setattr(_rules, _WINDOW_MAP[name], int(window))
+                logger.info("Rule override: %s window → %ds", name, int(window))
+    except Exception as exc:
+        logger.warning("Failed to apply rule overrides: %s", exc)
+
+
+async def _rule_overrides_refresh_loop(pool: Optional[asyncpg.Pool]) -> None:
+    """Reload rule overrides every 60 s so accepted suggestions take effect without restart."""
+    while True:
+        await asyncio.sleep(60)
+        await _apply_rule_overrides(pool)
+
+
 async def _baseline_flush_loop() -> None:
     """Background task: flush in-memory baselines to DB every FLUSH_INTERVAL seconds."""
     while True:
@@ -615,9 +668,11 @@ async def main() -> None:
                 pool_pre_ping=True,
             )
             session_factory = async_sessionmaker(sa_engine, expire_on_commit=False)
-            baseline_engine      = BaselineEngine(db_session_factory=session_factory)
+            baseline_engine        = BaselineEngine(db_session_factory=session_factory)
             suggestion_engine_inst = SuggestionEngine(db_session_factory=session_factory)
             await baseline_engine.load_from_db()
+            await suggestion_engine_inst.load_triggers_from_db()
+            await _apply_rule_overrides(pool)
             logger.info("Adaptive baseline engine initialised")
         except Exception as exc:
             logger.warning("Adaptive engines failed to initialise: %s", exc)
@@ -648,6 +703,9 @@ async def main() -> None:
     logger.info("Active rule windows — brute_force=%ds port_scan=%ds c2=%ds lateral=%ds blocked=%ds",
                 rules.BRUTE_FORCE_WINDOW, rules.PORT_SCAN_WINDOW, rules.C2_WINDOW,
                 rules.LATERAL_WINDOW, rules.BLOCKED_CONN_WINDOW)
+
+    # Start background tasks
+    asyncio.create_task(_rule_overrides_refresh_loop(pool))
 
     # Start adaptive engine background tasks
     asyncio.create_task(_baseline_flush_loop())

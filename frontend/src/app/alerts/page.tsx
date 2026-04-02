@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import useSWR from "swr";
-import { Bell, CheckCircle, XCircle, Clock, Filter, AlertTriangle, Search, X } from "lucide-react";
-import { getAlerts, acknowledgeAlert, resolveAlert, getAlertContext, type Alert, type AlertContext } from "@/lib/api";
+import { Bell, CheckCircle, XCircle, Clock, Filter, AlertTriangle, Search, X, TrendingDown, BarChart2 } from "lucide-react";
+import { getAlerts, acknowledgeAlert, resolveAlert, getAlertContext, getAlertsTimeline, type Alert, type AlertContext, type AlertTimeline } from "@/lib/api";
 import Link from "next/link";
 import { SeverityBadge } from "@/components/ui/SeverityBadge";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
@@ -17,6 +17,121 @@ const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
   resolved:        { label: "Resolved",      className: "text-status-success bg-status-success/10 border-status-success/25" },
   false_positive:  { label: "False Positive", className: "text-text-muted bg-bg-elevated border-border" },
 };
+
+// ── Inline sparkline chart (no extra deps) ────────────────────────────────────
+
+function AlertsTimelineChart({ timeline }: { timeline?: AlertTimeline }) {
+  const [chartDays, setChartDays] = useState(7);
+  const { data, isLoading } = useSWR(
+    ["alerts-timeline", chartDays],
+    () => getAlertsTimeline({ days: chartDays, interval: chartDays <= 2 ? "hour" : "day" }),
+    { refreshInterval: 60000 }
+  );
+
+  const used = timeline ?? data;
+
+  const buckets = useMemo(() => {
+    if (!used?.by_severity) return [];
+    const map: Record<string, Record<string, number>> = {};
+    for (const p of used.by_severity) {
+      if (!map[p.bucket]) map[p.bucket] = {};
+      map[p.bucket][p.severity] = (map[p.bucket][p.severity] ?? 0) + p.count;
+    }
+    return Object.entries(map)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([bucket, sev]) => ({
+        bucket,
+        label: new Date(bucket).toLocaleDateString("en", { month: "short", day: "numeric", hour: chartDays <= 2 ? "2-digit" : undefined }),
+        total: Object.values(sev).reduce((s, v) => s + v, 0),
+        critical: sev.critical ?? 0,
+        high:     sev.high     ?? 0,
+        medium:   sev.medium   ?? 0,
+        low:      sev.low      ?? 0,
+      }));
+  }, [used, chartDays]);
+
+  const maxVal = Math.max(...buckets.map(b => b.total), 1);
+
+  const SEV_COLORS: Record<string, string> = {
+    critical: "#ef4444",
+    high:     "#f97316",
+    medium:   "#eab308",
+    low:      "#22c55e",
+  };
+
+  return (
+    <div className="card p-5 mb-5">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <BarChart2 className="w-4 h-4 text-accent" />
+          <span className="text-sm font-semibold text-text-primary">Alerts Over Time</span>
+        </div>
+        <div className="flex gap-1">
+          {[1, 7, 14, 30].map(d => (
+            <button
+              key={d}
+              onClick={() => setChartDays(d)}
+              className={`text-2xs px-2 py-1 rounded border transition-colors ${
+                chartDays === d
+                  ? "bg-accent/10 text-accent border-accent/30"
+                  : "text-text-muted border-border hover:text-text-primary"
+              }`}
+            >{d === 1 ? "24h" : `${d}d`}</button>
+          ))}
+        </div>
+      </div>
+
+      {isLoading && !used ? (
+        <div className="h-28 flex items-center justify-center text-text-muted text-xs">Loading…</div>
+      ) : buckets.length === 0 ? (
+        <div className="h-28 flex items-center justify-center text-text-muted text-xs">No alert data for this period</div>
+      ) : (
+        <>
+          <div className="flex items-end gap-1 h-28 overflow-x-auto pb-1">
+            {buckets.map(b => (
+              <div key={b.bucket} className="flex flex-col items-center gap-0.5 flex-1 min-w-[18px] group relative">
+                <div
+                  className="w-full rounded-sm flex flex-col-reverse overflow-hidden transition-all"
+                  style={{ height: `${Math.round((b.total / maxVal) * 100)}px`, minHeight: b.total > 0 ? "2px" : "0" }}
+                >
+                  {(["low","medium","high","critical"] as const).map(s => (
+                    b[s] > 0 && (
+                      <div
+                        key={s}
+                        style={{ height: `${Math.round((b[s] / b.total) * 100)}%`, backgroundColor: SEV_COLORS[s] }}
+                      />
+                    )
+                  ))}
+                </div>
+                {/* tooltip */}
+                <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 hidden group-hover:flex flex-col bg-bg-overlay border border-border rounded px-2 py-1 text-2xs whitespace-nowrap z-10 shadow-lg">
+                  <span className="font-semibold">{b.label}</span>
+                  <span>Total: {b.total}</span>
+                  {b.critical > 0 && <span className="text-red-400">Critical: {b.critical}</span>}
+                  {b.high > 0     && <span className="text-orange-400">High: {b.high}</span>}
+                  {b.medium > 0   && <span className="text-yellow-400">Medium: {b.medium}</span>}
+                  {b.low > 0      && <span className="text-green-400">Low: {b.low}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center gap-3 mt-2 flex-wrap">
+            {Object.entries(SEV_COLORS).map(([s, c]) => (
+              <span key={s} className="flex items-center gap-1 text-2xs text-text-muted">
+                <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ backgroundColor: c }} />
+                {s.charAt(0).toUpperCase() + s.slice(1)}
+              </span>
+            ))}
+            <span className="ml-auto text-2xs text-text-muted flex items-center gap-1">
+              <TrendingDown className="w-3 h-3" />
+              Accepting tuning suggestions reduces alert volume
+            </span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 export default function AlertsPage() {
   const [status, setStatus] = useState("open");
@@ -72,6 +187,7 @@ export default function AlertsPage() {
         <div>
           <h1 className="text-xl font-semibold text-text-primary">Alerts</h1>
           <p className="text-sm text-text-muted mt-0.5">
+
             {data
               ? search
                 ? `${alerts.length} of ${data.total} ${status || "total"} alerts`
@@ -80,6 +196,9 @@ export default function AlertsPage() {
           </p>
         </div>
       </div>
+
+      {/* Timeline chart */}
+      <AlertsTimelineChart />
 
       {/* Filters */}
       <div className="card p-4 flex flex-wrap gap-3">

@@ -167,6 +167,28 @@ async def accept_suggestion(
         "reason":         "Manually accepted by analyst",
     })
 
+    # Write the suggested threshold into rule_overrides so the correlation
+    # service picks it up on its next 60-second poll.
+    suggested = _jsonb(row.suggested_value) or {}
+    if suggested.get("threshold") is not None:
+        await db.execute(text("""
+            INSERT INTO rule_overrides
+              (rule_name, entity_type, entity_value, threshold, applied_by, suggestion_id)
+            VALUES
+              (:rule_name, :entity_type, :entity_value, :threshold, 'analyst', :sid)
+            ON CONFLICT (rule_name, entity_type, entity_value) DO UPDATE SET
+              threshold   = EXCLUDED.threshold,
+              applied_by  = 'analyst',
+              applied_at  = NOW(),
+              suggestion_id = EXCLUDED.suggestion_id
+        """), {
+            "rule_name":    row.rule_name,
+            "entity_type":  row.entity_type or "global",
+            "entity_value": row.entity_value or "*",
+            "threshold":    float(suggested["threshold"]),
+            "sid":          suggestion_id,
+        })
+
     await db.commit()
 
     updated = (await db.execute(text(

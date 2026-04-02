@@ -384,6 +384,39 @@ export function markFalsePositive(id: string): Promise<void> {
   return apiFetch(`/indicators/${id}/false-positive`, { method: "POST" });
 }
 
+export function deleteIndicator(id: string): Promise<void> {
+  return apiFetch(`/indicators/${id}`, { method: "DELETE" });
+}
+
+// ── Alerts timeline ───────────────────────────────────────────────────────────
+
+export interface AlertTimelinePoint {
+  bucket:   string;
+  severity: string;
+  count:    number;
+}
+
+export interface AlertTimelineByRule {
+  bucket:    string;
+  rule_name: string;
+  count:     number;
+}
+
+export interface AlertTimeline {
+  by_severity: AlertTimelinePoint[];
+  by_rule:     AlertTimelineByRule[];
+}
+
+export function getAlertsTimeline(params: {
+  days?:     number;
+  interval?: "hour" | "day";
+} = {}): Promise<AlertTimeline> {
+  const qs = new URLSearchParams();
+  if (params.days)     qs.set("days",     String(params.days));
+  if (params.interval) qs.set("interval", params.interval);
+  return apiFetch(`/stats/alerts-timeline?${qs}`);
+}
+
 // ── Logs ──────────────────────────────────────────────────────────────────────
 
 export function getLogs(params: {

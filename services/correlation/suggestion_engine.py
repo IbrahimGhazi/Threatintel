@@ -133,6 +133,31 @@ class SuggestionEngine:
                 baseline_info=baseline_info or {},
             )
 
+    async def load_triggers_from_db(self) -> None:
+        """Seed in-memory trigger counters from pending suggestions in the DB.
+
+        Called once at startup so that restarts never reset the trigger count
+        to zero — the counter picks up from where it left off.
+        """
+        if not self._db_factory:
+            return
+        try:
+            from sqlalchemy import text as sa_text
+            async with self._db_factory() as db:
+                rows = (await db.execute(sa_text("""
+                    SELECT rule_name, entity_value, trigger_count
+                    FROM tuning_suggestions
+                    WHERE status = 'pending'
+                """))).fetchall()
+            for row in rows:
+                key = (row.rule_name, (row.entity_value or "global").lower())
+                existing = self._triggers.get(key, 0)
+                if row.trigger_count > existing:
+                    self._triggers[key] = int(row.trigger_count)
+            logger.info("Seeded %d trigger counters from DB", len(rows))
+        except Exception as exc:
+            logger.warning("Failed to seed trigger counters: %s", exc)
+
     async def _refresh_settings(self) -> None:
         """Read auto-apply settings from platform_settings (cached for _SETTINGS_TTL s)."""
         if not self._db_factory:
@@ -206,12 +231,11 @@ class SuggestionEngine:
             suggested["threshold"] = round(new_thresh, 0)
             suggested["basis"]     = "mean_plus_3sigma"
 
-        # Schedule auto-apply only when confidence reaches the threshold
-        auto_apply_at: Optional[str] = None
+        # Schedule auto-apply only when confidence reaches the threshold.
+        # Store as a real datetime object — asyncpg cannot accept ISO strings.
+        auto_apply_at: Optional[datetime] = None
         if confidence >= self._conf_threshold:
-            auto_apply_at = (
-                datetime.now(timezone.utc) + timedelta(hours=self._delay_hours)
-            ).isoformat()
+            auto_apply_at = datetime.now(timezone.utc) + timedelta(hours=self._delay_hours)
 
         try:
             from sqlalchemy import text as sa_text
@@ -238,7 +262,7 @@ class SuggestionEngine:
                             auto_apply_at = (
                                 datetime.now(timezone.utc)
                                 + timedelta(hours=self._delay_hours)
-                            ).isoformat()
+                            )
 
                     await db.execute(sa_text("""
                         UPDATE tuning_suggestions SET
@@ -297,6 +321,8 @@ class SuggestionEngine:
         try:
             from sqlalchemy import text as sa_text
             async with self._db_factory() as db:
+                # confidence was already validated when auto_apply_at was scheduled;
+                # do not re-check it here so rounding near the threshold never blocks apply.
                 due = (await db.execute(sa_text("""
                     SELECT id, rule_name, entity_type, entity_value,
                            suggestion_type, category,
@@ -306,9 +332,8 @@ class SuggestionEngine:
                     WHERE status        = 'pending'
                       AND auto_apply_at IS NOT NULL
                       AND auto_apply_at <= NOW()
-                      AND confidence   >= :threshold
                     LIMIT 20
-                """), {"threshold": self._conf_threshold})).fetchall()
+                """))).fetchall()
 
                 for row in due:
                     if _is_protected_rule(row.rule_name):
