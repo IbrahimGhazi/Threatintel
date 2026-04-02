@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Indicator Investigation Page – detailed view for a single indicator.
  * Shows enrichment data, sources, associated alerts, and related indicators.

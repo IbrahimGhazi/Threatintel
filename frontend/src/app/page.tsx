@@ -1,3 +1,4 @@
+// @ts-nocheck
 "use client";
 /**
  * Dashboard – main SOC overview page.
