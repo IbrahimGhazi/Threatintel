@@ -26,6 +26,7 @@ import json
 import logging
 import math
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Tuple
 
@@ -89,10 +90,17 @@ class SuggestionEngine:
         )
     """
 
+    # How long to cache DB settings before re-reading (seconds)
+    _SETTINGS_TTL = 60.0
+
     def __init__(self, db_session_factory=None):
         self._db_factory = db_session_factory
         # In-memory trigger counter: (rule_name, entity_value) → count
         self._triggers: Dict[Tuple[str, str], int] = {}
+        # Cached runtime settings (overrides env-var defaults when DB is available)
+        self._delay_hours:      int   = AUTO_APPLY_DELAY_HOURS
+        self._conf_threshold:   float = AUTO_APPLY_CONFIDENCE
+        self._settings_read_at: float = 0.0
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -125,6 +133,28 @@ class SuggestionEngine:
                 baseline_info=baseline_info or {},
             )
 
+    async def _refresh_settings(self) -> None:
+        """Read auto-apply settings from platform_settings (cached for _SETTINGS_TTL s)."""
+        if not self._db_factory:
+            return
+        if time.monotonic() - self._settings_read_at < self._SETTINGS_TTL:
+            return
+        try:
+            from sqlalchemy import text as sa_text
+            async with self._db_factory() as db:
+                rows = (await db.execute(sa_text(
+                    "SELECT key, value FROM platform_settings "
+                    "WHERE key IN ('auto_apply_delay_hours', 'auto_apply_confidence')"
+                ))).fetchall()
+            for row in rows:
+                if row.key == "auto_apply_delay_hours":
+                    self._delay_hours = max(1, int(row.value))
+                elif row.key == "auto_apply_confidence":
+                    self._conf_threshold = float(row.value)
+            self._settings_read_at = time.monotonic()
+        except Exception as exc:
+            logger.debug("Could not refresh tuning settings from DB: %s", exc)
+
     async def run_auto_apply_loop(self) -> None:
         """Background task: check for auto-apply candidates every 5 minutes."""
         while True:
@@ -149,6 +179,7 @@ class SuggestionEngine:
         if not self._db_factory:
             return
 
+        await self._refresh_settings()
         confidence = _confidence(trigger_count)
 
         # Build human-readable rationale
@@ -177,9 +208,9 @@ class SuggestionEngine:
 
         # Schedule auto-apply only when confidence reaches the threshold
         auto_apply_at: Optional[str] = None
-        if confidence >= AUTO_APPLY_CONFIDENCE:
+        if confidence >= self._conf_threshold:
             auto_apply_at = (
-                datetime.now(timezone.utc) + timedelta(hours=AUTO_APPLY_DELAY_HOURS)
+                datetime.now(timezone.utc) + timedelta(hours=self._delay_hours)
             ).isoformat()
 
         try:
@@ -203,10 +234,10 @@ class SuggestionEngine:
                         self._triggers[key] = trigger_count
                         confidence    = _confidence(trigger_count)
                         auto_apply_at = None
-                        if confidence >= AUTO_APPLY_CONFIDENCE:
+                        if confidence >= self._conf_threshold:
                             auto_apply_at = (
                                 datetime.now(timezone.utc)
-                                + timedelta(hours=AUTO_APPLY_DELAY_HOURS)
+                                + timedelta(hours=self._delay_hours)
                             ).isoformat()
 
                     await db.execute(sa_text("""
@@ -262,6 +293,7 @@ class SuggestionEngine:
         """Find due auto-apply suggestions and write audit-log entries."""
         if not self._db_factory:
             return
+        await self._refresh_settings()
         try:
             from sqlalchemy import text as sa_text
             async with self._db_factory() as db:
@@ -276,7 +308,7 @@ class SuggestionEngine:
                       AND auto_apply_at <= NOW()
                       AND confidence   >= :threshold
                     LIMIT 20
-                """), {"threshold": AUTO_APPLY_CONFIDENCE})).fetchall()
+                """), {"threshold": self._conf_threshold})).fetchall()
 
                 for row in due:
                     if _is_protected_rule(row.rule_name):
@@ -317,7 +349,7 @@ class SuggestionEngine:
                             dict(row.suggested_value) if row.suggested_value else {}
                         ),
                         "reason": (
-                            f"Auto-applied after {AUTO_APPLY_DELAY_HOURS}h with no response. "
+                            f"Auto-applied after {self._delay_hours}h with no response. "
                             f"confidence={row.confidence:.0%}, triggers={row.trigger_count}"
                         ),
                     })

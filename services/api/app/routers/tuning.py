@@ -12,7 +12,7 @@ GET  /tuning/baselines                   — view per-entity behavioral baseline
 import json
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -317,6 +317,81 @@ async def list_baselines(
     } for r in rows]
 
     return {"items": items, "total": total}
+
+
+# ── Runtime config ───────────────────────────────────────────────────────────
+
+_ALLOWED_SETTINGS = {
+    "auto_apply_delay_hours": ("int",   1,    168),
+    "auto_apply_confidence":  ("float", 0.50, 0.99),
+}
+
+
+def _config_row(row) -> dict:
+    return {
+        "value":       row.value,
+        "description": row.description,
+        "updated_at":  _iso(row.updated_at),
+    }
+
+
+@router.get("/config")
+async def get_tuning_config(
+    db: AsyncSession = Depends(get_db),
+    _:  str          = Depends(require_api_key),
+):
+    """Return current auto-apply configuration."""
+    rows = (await db.execute(text(
+        "SELECT key, value, description, updated_at FROM platform_settings ORDER BY key"
+    ))).fetchall()
+    return {r.key: _config_row(r) for r in rows}
+
+
+@router.patch("/config")
+async def update_tuning_config(
+    body: Dict[str, Any] = Body(...),
+    db:   AsyncSession   = Depends(get_db),
+    _:    str            = Depends(require_api_key),
+):
+    """Update auto-apply settings. Immediately reschedules pending suggestions."""
+    for key, raw_value in body.items():
+        if key not in _ALLOWED_SETTINGS:
+            raise HTTPException(status_code=400, detail=f"Unknown setting: {key}")
+
+        kind, lo, hi = _ALLOWED_SETTINGS[key]
+        try:
+            typed = int(raw_value) if kind == "int" else float(raw_value)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail=f"{key} must be a {kind}")
+
+        if not (lo <= typed <= hi):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{key} must be between {lo} and {hi}",
+            )
+
+        await db.execute(
+            text("UPDATE platform_settings SET value = :v WHERE key = :k"),
+            {"k": key, "v": str(typed)},
+        )
+
+    # If the review window changed, reschedule all pending suggestions that
+    # already have auto_apply_at set so the new delay takes effect immediately.
+    if "auto_apply_delay_hours" in body:
+        hours = int(body["auto_apply_delay_hours"])
+        await db.execute(text("""
+            UPDATE tuning_suggestions
+            SET auto_apply_at = NOW() + (:hours * INTERVAL '1 hour')
+            WHERE status = 'pending'
+              AND auto_apply_at IS NOT NULL
+        """), {"hours": hours})
+
+    await db.commit()
+
+    rows = (await db.execute(text(
+        "SELECT key, value, description, updated_at FROM platform_settings ORDER BY key"
+    ))).fetchall()
+    return {r.key: _config_row(r) for r in rows}
 
 
 # ── Summary stats ─────────────────────────────────────────────────────────────

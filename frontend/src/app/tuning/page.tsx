@@ -17,6 +17,8 @@ import {
   Zap,
   Database,
   RefreshCw,
+  Settings,
+  Save,
 } from "lucide-react";
 import {
   getTuningStats,
@@ -26,10 +28,13 @@ import {
   getAdaptiveChanges,
   revertChange,
   getBehavioralBaselines,
+  getTuningConfig,
+  updateTuningConfig,
   type TuningSuggestion,
   type AdaptiveRuleChange,
   type BehavioralBaseline,
   type TuningStats,
+  type TuningConfig,
 } from "@/lib/api";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { Badge } from "@/components/ui/badge";
@@ -414,9 +419,89 @@ function StatsHeader({ stats }: { stats?: TuningStats }) {
   );
 }
 
+// ── Review window settings ────────────────────────────────────────────────────
+
+function ReviewWindowSettings({ config, onSaved }: { config?: TuningConfig; onSaved: () => void }) {
+  const current = config ? parseInt(config.auto_apply_delay_hours.value, 10) : 24;
+  const [hours, setHours] = useState<number>(current);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved]   = useState(false);
+
+  // Keep local state in sync when config loads
+  if (config && hours === 24 && current !== 24) setHours(current);
+
+  const dirty = hours !== current;
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await updateTuningConfig({ auto_apply_delay_hours: hours });
+      onSaved();
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch {
+      // ignore — SWR will re-fetch
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="card p-4 flex flex-col sm:flex-row sm:items-center gap-4">
+      <div className="flex items-center gap-2 flex-shrink-0">
+        <Settings className="w-4 h-4 text-accent" />
+        <span className="text-sm font-medium text-text-primary">Review window</span>
+      </div>
+
+      <div className="flex items-center gap-3 flex-1">
+        <input
+          type="range"
+          min={1}
+          max={168}
+          step={1}
+          value={hours}
+          onChange={(e) => setHours(Number(e.target.value))}
+          className="flex-1 accent-accent h-1.5 cursor-pointer"
+        />
+        <div className="flex items-center gap-1 w-24 flex-shrink-0">
+          <input
+            type="number"
+            min={1}
+            max={168}
+            value={hours}
+            onChange={(e) => setHours(Math.min(168, Math.max(1, Number(e.target.value))))}
+            className="w-16 text-center text-sm font-mono bg-bg-elevated border border-border rounded px-2 py-1 text-text-primary focus:outline-none focus:border-accent"
+          />
+          <span className="text-xs text-text-muted">h</span>
+        </div>
+      </div>
+
+      <button
+        onClick={handleSave}
+        disabled={!dirty || saving}
+        className={clsx(
+          "btn text-xs h-auto py-1.5 px-3 flex items-center gap-1.5 flex-shrink-0 transition-all",
+          saved
+            ? "bg-status-success/10 text-status-success border border-status-success/30"
+            : dirty
+            ? "bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20"
+            : "btn-ghost opacity-50 cursor-not-allowed",
+        )}
+      >
+        {saving ? <LoadingSpinner size="sm" /> : saved ? <CheckCircle className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
+        {saved ? "Saved" : "Apply"}
+      </button>
+
+      <p className="text-2xs text-text-muted sm:hidden">
+        {hours === 1 ? "1 hour" : `${hours} hours`} before auto-applying high-confidence suggestions
+      </p>
+    </div>
+  );
+}
+
 // ── Safeguards info box ───────────────────────────────────────────────────────
 
-function SafeguardsNote() {
+function SafeguardsNote({ delayHours }: { delayHours: number }) {
   return (
     <div className="card p-4 flex gap-3 border-l-2 border-l-accent/50">
       <Shield className="w-4 h-4 text-accent flex-shrink-0 mt-0.5" />
@@ -426,7 +511,7 @@ function SafeguardsNote() {
           <li>Critical-severity alerts are never automatically suppressed</li>
           <li>Signature-based and threat-intelligence rules are protected</li>
           <li>Every change is logged and reversible via the Changes tab</li>
-          <li>Auto-apply requires ≥ 85 % confidence and a 24 h review window</li>
+          <li>Auto-apply requires ≥ 85 % confidence and a {delayHours} h review window</li>
         </ul>
       </div>
     </div>
@@ -442,6 +527,12 @@ export default function TuningPage() {
   const [actingChange, setActingChange] = useState<string | null>(null);
 
   // Data fetching
+  const { data: config, mutate: mutateConfig } = useSWR(
+    "tuning-config",
+    () => getTuningConfig(),
+    { refreshInterval: 60000 },
+  );
+
   const { data: stats, mutate: mutateStats } = useSWR(
     "tuning-stats",
     () => getTuningStats(),
@@ -518,8 +609,11 @@ export default function TuningPage() {
       {/* Stats */}
       <StatsHeader stats={stats} />
 
+      {/* Review window control */}
+      <ReviewWindowSettings config={config} onSaved={mutateConfig} />
+
       {/* Safeguards note */}
-      <SafeguardsNote />
+      <SafeguardsNote delayHours={config ? parseInt(config.auto_apply_delay_hours.value, 10) : 24} />
 
       {/* Tabs */}
       <div className="card p-1 flex gap-1">

@@ -325,6 +325,33 @@ export function getBehavioralBaselines(params: {
   return apiFetch(`/tuning/baselines?${qs}`);
 }
 
+// ── Tuning config ─────────────────────────────────────────────────────────────
+
+export interface TuningConfigEntry {
+  value:       string;
+  description: string;
+  updated_at:  string;
+}
+
+export interface TuningConfig {
+  auto_apply_delay_hours: TuningConfigEntry;
+  auto_apply_confidence:  TuningConfigEntry;
+}
+
+export function getTuningConfig(): Promise<TuningConfig> {
+  return apiFetch("/tuning/config");
+}
+
+export function updateTuningConfig(
+  body: Partial<{ auto_apply_delay_hours: number; auto_apply_confidence: number }>
+): Promise<TuningConfig> {
+  return apiFetch("/tuning/config", {
+    method:  "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify(body),
+  });
+}
+
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 export function getDashboardStats(): Promise<DashboardStats> {
