@@ -1,0 +1,108 @@
+# ═══════════════════════════════════════════════════════════════
+# Secrets & environment — NEVER commit these
+# ═══════════════════════════════════════════════════════════════
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*_rsa
+*_rsa.pub
+infra/nginx/ssl/
+infra/secrets/
+secrets/
+credentials.json
+**/serviceaccount.json
+
+# ═══════════════════════════════════════════════════════════════
+# Python
+# ═══════════════════════════════════════════════════════════════
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.venv/
+venv/
+env/
+*.log
+
+# ═══════════════════════════════════════════════════════════════
+# Node / Next.js (frontend)
+# ═══════════════════════════════════════════════════════════════
+node_modules/
+.next/
+out/
+build/
+dist/
+.turbo/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ═══════════════════════════════════════════════════════════════
+# Docker / Kubernetes
+# ═══════════════════════════════════════════════════════════════
+*.tar
+docker-compose.override.yml
+infra/k8s/secrets/*.yaml
+!infra/k8s/secrets/*.example.yaml
+
+# ═══════════════════════════════════════════════════════════════
+# Data / volumes (don't commit firewall logs, postgres dumps, etc.)
+# ═══════════════════════════════════════════════════════════════
+data/
+*.dump
+*.sql.gz
+geoip-data/
+sandbox-files/
+postgres-data/
+redis-data/
+nats-data/
+prometheus-data/
+grafana-data/
+
+# ═══════════════════════════════════════════════════════════════
+# Editor / OS
+# ═══════════════════════════════════════════════════════════════
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+desktop.ini
+Thumbs.db
+
+# Backups left on disk by ad-hoc edits
+*.bak
+*.bak[0-9]
+*.orig
+
+# ═══════════════════════════════════════════════════════════════
+# Claude / Obsidian
+# ═══════════════════════════════════════════════════════════════
+.claude/
+# Obsidian internals — keep the markdown but skip the cache
+obsidian-vault/.obsidian/workspace*
+obsidian-vault/.obsidian/cache/
+obsidian-vault/.trash/
+
+# ═══════════════════════════════════════════════════════════════
+# ML artifacts (large)
+# ═══════════════════════════════════════════════════════════════
+*.pkl
+*.joblib
+*.pt
+*.h5
+ml/checkpoints/
+ml/datasets/
