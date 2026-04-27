@@ -2,13 +2,13 @@
 
 import { useState, useMemo } from "react";
 import useSWR from "swr";
-import { Bell, CheckCircle, XCircle, Clock, Filter, AlertTriangle, Search, X, TrendingDown, BarChart2 } from "lucide-react";
-import { getAlerts, acknowledgeAlert, resolveAlert, getAlertContext, getAlertsTimeline, type Alert, type AlertContext, type AlertTimeline } from "@/lib/api";
+import { Bell, CheckCircle, XCircle, Clock, Filter, AlertTriangle, Search, X, TrendingDown, BarChart2, Shield, ChevronDown, ChevronRight, Layers } from "lucide-react";
+import { getAlerts, acknowledgeAlert, resolveAlert, getAlertContext, getAlertsTimeline, getIncidents, getIncident, resolveIncident, type Alert, type AlertContext, type AlertTimeline, type Incident, type IncidentDetail } from "@/lib/api";
 import Link from "next/link";
 import { SeverityBadge } from "@/components/ui/SeverityBadge";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { Badge } from "@/components/ui/badge";
-import { formatDistanceToNow, parseISO } from "date-fns";
+import { formatDistanceToNow, parseISO, format } from "date-fns";
 import clsx from "clsx";
 
 const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
@@ -133,7 +133,278 @@ function AlertsTimelineChart({ timeline }: { timeline?: AlertTimeline }) {
   );
 }
 
+// ── Incident Status Config ────────────────────────────────────────────────────
+
+const INCIDENT_STATUS_CONFIG: Record<string, { label: string; className: string }> = {
+  open:          { label: "Open",          className: "text-severity-high bg-severity-high/10 border-severity-high/25" },
+  investigating: { label: "Investigating", className: "text-severity-medium bg-severity-medium/10 border-severity-medium/25" },
+  resolved:      { label: "Resolved",      className: "text-status-success bg-status-success/10 border-status-success/25" },
+  closed:        { label: "Closed",        className: "text-text-muted bg-bg-elevated border-border" },
+};
+
+// ── Expanded Incident Card ────────────────────────────────────────────────────
+
+function IncidentCard({ incident }: { incident: Incident }) {
+  const [expanded, setExpanded] = useState(false);
+  const [detail, setDetail] = useState<IncidentDetail | null>(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [resolving, setResolving] = useState(false);
+
+  const handleToggle = async () => {
+    if (!expanded && !detail) {
+      setLoadingDetail(true);
+      try {
+        const d = await getIncident(incident.id);
+        setDetail(d);
+      } catch {
+        // fail silently
+      } finally {
+        setLoadingDetail(false);
+      }
+    }
+    setExpanded(!expanded);
+  };
+
+  const handleResolve = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setResolving(true);
+    try {
+      await resolveIncident(incident.id);
+    } finally {
+      setResolving(false);
+    }
+  };
+
+  const timeRange = (() => {
+    try {
+      const first = parseISO(incident.first_seen);
+      const last = parseISO(incident.last_seen);
+      return `${format(first, "MMM d HH:mm")} - ${format(last, "HH:mm")}`;
+    } catch {
+      return "";
+    }
+  })();
+
+  return (
+    <div
+      className={clsx(
+        "card border-l-2",
+        incident.severity === "critical" ? "border-l-severity-critical" :
+        incident.severity === "high"     ? "border-l-severity-high" :
+        incident.severity === "medium"   ? "border-l-severity-medium" :
+        "border-l-severity-low"
+      )}
+    >
+      {/* Incident header */}
+      <button
+        onClick={handleToggle}
+        className="w-full p-5 text-left flex items-start gap-4"
+      >
+        <div className="flex-shrink-0 mt-0.5">
+          {expanded
+            ? <ChevronDown className="w-4 h-4 text-text-muted" />
+            : <ChevronRight className="w-4 h-4 text-text-muted" />
+          }
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-3 mb-2 flex-wrap">
+            <SeverityBadge severity={incident.severity} />
+            <span className={clsx(
+              "badge border",
+              INCIDENT_STATUS_CONFIG[incident.status]?.className
+            )}>
+              {INCIDENT_STATUS_CONFIG[incident.status]?.label ?? incident.status}
+            </span>
+            {incident.attack_type && (
+              <Badge variant="secondary" className="text-xs">
+                {incident.attack_type}
+              </Badge>
+            )}
+            <Badge variant="outline" className="text-xs">
+              {incident.total_events} alert{incident.total_events !== 1 ? "s" : ""}
+            </Badge>
+          </div>
+          <h3 className="text-sm font-semibold text-text-primary">{incident.title}</h3>
+          {incident.description && (
+            <p className="text-xs text-text-muted mt-1 line-clamp-2">{incident.description}</p>
+          )}
+          <div className="flex items-center gap-4 mt-2 flex-wrap">
+            {incident.source_ip && (
+              <span className="text-2xs text-text-muted flex items-center gap-1">
+                <Shield className="w-3 h-3" />
+                {incident.source_ip}
+              </span>
+            )}
+            {timeRange && (
+              <span className="text-2xs text-text-muted flex items-center gap-1">
+                <Clock className="w-3 h-3" />
+                {timeRange}
+              </span>
+            )}
+            {incident.mitre_tactics.length > 0 && (
+              <div className="flex gap-1 flex-wrap">
+                {incident.mitre_tactics.map((t, i) => (
+                  <span key={i} className="text-2xs px-1.5 py-0.5 rounded bg-accent/10 text-accent border border-accent/20">
+                    {t}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {(incident.status === "open" || incident.status === "investigating") && (
+            <button
+              onClick={handleResolve}
+              disabled={resolving}
+              className="btn text-xs bg-status-success/15 text-status-success border border-status-success/30 hover:bg-status-success/25 px-2 py-1 h-auto"
+            >
+              {resolving ? <LoadingSpinner size="sm" /> : "Resolve All"}
+            </button>
+          )}
+        </div>
+      </button>
+
+      {/* Expanded alert list */}
+      {expanded && (
+        <div className="border-t border-border px-5 pb-4 pt-3">
+          {loadingDetail ? (
+            <div className="flex justify-center py-6">
+              <LoadingSpinner />
+            </div>
+          ) : detail?.alerts && detail.alerts.length > 0 ? (
+            <div className="space-y-2">
+              <h4 className="text-xs font-semibold text-text-muted mb-2">
+                Evidence ({detail.alerts.length} alerts)
+              </h4>
+              {detail.alerts.map((alert) => (
+                <div
+                  key={alert.id}
+                  className={clsx(
+                    "p-3 rounded-md border-l-2 bg-bg-elevated/50 border border-border",
+                    alert.severity === "critical" ? "border-l-severity-critical" :
+                    alert.severity === "high"     ? "border-l-severity-high" :
+                    alert.severity === "medium"   ? "border-l-severity-medium" :
+                    "border-l-severity-low"
+                  )}
+                >
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
+                    <SeverityBadge severity={alert.severity} />
+                    <span className={clsx(
+                      "badge border text-2xs",
+                      STATUS_CONFIG[alert.status]?.className
+                    )}>
+                      {STATUS_CONFIG[alert.status]?.label ?? alert.status}
+                    </span>
+                    {alert.rule_name && (
+                      <span className="text-2xs text-text-muted">
+                        {alert.rule_name.replace(/_/g, " ")}
+                      </span>
+                    )}
+                  </div>
+                  <Link href={`/alerts/${alert.id}`} className="block">
+                    <span className="text-xs font-medium text-text-primary hover:text-primary hover:underline">
+                      {alert.title}
+                    </span>
+                  </Link>
+                  <div className="flex items-center gap-3 mt-1 text-2xs text-text-muted">
+                    {alert.indicator_value && (
+                      <span className="mono-value text-accent">{alert.indicator_value}</span>
+                    )}
+                    <span>
+                      {formatDistanceToNow(parseISO(alert.created_at), { addSuffix: true })}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-text-muted text-center py-4">No alert details available</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Incidents Panel ──────────────────────────────────────────────────────────
+
+function IncidentsPanel() {
+  const [incStatus, setIncStatus] = useState("open");
+  const [incSeverity, setIncSeverity] = useState("");
+
+  const { data, isLoading, error } = useSWR(
+    ["incidents", incStatus, incSeverity],
+    () => getIncidents({
+      status: incStatus || undefined,
+      severity: incSeverity || undefined,
+      limit: 50,
+    }),
+    { refreshInterval: 15000 }
+  );
+
+  const incidents = data?.items ?? [];
+
+  return (
+    <div className="space-y-4">
+      {/* Incident filters */}
+      <div className="card p-4 flex flex-wrap gap-3">
+        <div className="flex gap-2">
+          {["open", "investigating", "resolved", ""].map((s) => (
+            <button
+              key={s}
+              onClick={() => setIncStatus(s)}
+              className={clsx(
+                "btn text-xs",
+                incStatus === s ? "btn-primary" : "btn-ghost"
+              )}
+            >
+              {s === "" ? "All" : s.charAt(0).toUpperCase() + s.slice(1)}
+            </button>
+          ))}
+        </div>
+        <select
+          value={incSeverity}
+          onChange={(e) => setIncSeverity(e.target.value)}
+          className="ti-input text-xs ml-auto"
+        >
+          <option value="">All Severities</option>
+          {["critical", "high", "medium", "low"].map((s) => (
+            <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Incident list */}
+      {isLoading ? (
+        <div className="card flex items-center justify-center py-16">
+          <LoadingSpinner />
+        </div>
+      ) : error ? (
+        <div className="card flex items-center justify-center py-16 gap-2 text-text-muted text-sm">
+          <AlertTriangle className="w-4 h-4 text-severity-high" />
+          Failed to load incidents
+        </div>
+      ) : incidents.length === 0 ? (
+        <div className="card flex flex-col items-center justify-center py-16 gap-3">
+          <CheckCircle className="w-8 h-8 text-status-success" />
+          <p className="text-sm text-text-muted">
+            No {incStatus || ""} incidents
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {incidents.map((inc) => (
+            <IncidentCard key={inc.id} incident={inc} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AlertsPage() {
+  const [viewMode, setViewMode] = useState<"alerts" | "incidents">("alerts");
   const [status, setStatus] = useState("open");
   const [severity, setSev]  = useState("");
   const [search, setSearch] = useState("");
@@ -185,18 +456,53 @@ export default function AlertsPage() {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-text-primary">Alerts</h1>
+          <h1 className="text-xl font-semibold text-text-primary">
+            {viewMode === "alerts" ? "Alerts" : "Incidents"}
+          </h1>
           <p className="text-sm text-text-muted mt-0.5">
-
-            {data
-              ? search
-                ? `${alerts.length} of ${data.total} ${status || "total"} alerts`
-                : `${data.total} ${status || "total"} alerts`
-              : "Security alerts and detections"}
+            {viewMode === "alerts"
+              ? (data
+                  ? search
+                    ? `${alerts.length} of ${data.total} ${status || "total"} alerts`
+                    : `${data.total} ${status || "total"} alerts`
+                  : "Security alerts and detections")
+              : "Related alerts grouped into security incidents"
+            }
           </p>
+        </div>
+        {/* View mode toggle */}
+        <div className="flex rounded-md border border-border overflow-hidden">
+          <button
+            onClick={() => setViewMode("alerts")}
+            className={clsx(
+              "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors",
+              viewMode === "alerts"
+                ? "bg-accent/15 text-accent"
+                : "text-text-muted hover:text-text-primary hover:bg-bg-elevated"
+            )}
+          >
+            <Bell className="w-3.5 h-3.5" />
+            Alerts
+          </button>
+          <button
+            onClick={() => setViewMode("incidents")}
+            className={clsx(
+              "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors border-l border-border",
+              viewMode === "incidents"
+                ? "bg-accent/15 text-accent"
+                : "text-text-muted hover:text-text-primary hover:bg-bg-elevated"
+            )}
+          >
+            <Layers className="w-3.5 h-3.5" />
+            Incidents
+          </button>
         </div>
       </div>
 
+      {viewMode === "incidents" ? (
+        <IncidentsPanel />
+      ) : (
+      <>
       {/* Timeline chart */}
       <AlertsTimelineChart />
 
@@ -371,6 +677,8 @@ export default function AlertsPage() {
           ))
         )}
       </div>
+      </>
+      )}
     </div>
   );
 }

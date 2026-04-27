@@ -1,18 +1,27 @@
 // @ts-nocheck
+"use client";
 /**
  * Indicator Investigation Page – detailed view for a single indicator.
- * Shows enrichment data, sources, associated alerts, and related indicators.
+ * Shows enrichment data, sources, associated alerts, toggle active state,
+ * and triggered alerts section.
  */
-import { notFound } from "next/navigation";
+import { useState } from "react";
+import { useParams } from "next/navigation";
+import useSWR from "swr";
 import Link from "next/link";
-import { getIndicator, markFalsePositive, deleteIndicator } from "@/lib/api";
 import { SeverityBadge } from "@/components/ui/SeverityBadge";
+import { Badge } from "@/components/ui/badge";
 import {
   ChevronLeft, Globe, Hash, Link2, Shield, Clock,
-  Database, Tag, AlertTriangle, CheckCircle, XCircle, Trash2, Flag,
+  Database, Tag, AlertTriangle, CheckCircle, XCircle,
+  Power, Loader2, ShieldAlert,
 } from "lucide-react";
 import { formatDistanceToNow, format, parseISO } from "date-fns";
-import IndicatorActions from "./IndicatorActions";
+import clsx from "clsx";
+import {
+  getIndicator, markFalsePositive, toggleIndicatorActive, deleteIndicator,
+  getIndicatorAlerts, type Indicator, type Alert,
+} from "@/lib/api";
 
 function Section({ title, icon: Icon, children }: {
   title: string; icon: any; children: React.ReactNode;
@@ -69,16 +78,66 @@ function EnrichmentData({ enrichment }: { enrichment: Record<string, any> }) {
   );
 }
 
-export default async function IndicatorDetailPage({
-  params,
-}: {
-  params: { id: string };
-}) {
-  let indicator;
-  try {
-    indicator = await getIndicator(params.id);
-  } catch {
-    notFound();
+const SEV_CLASSES: Record<string, string> = {
+  critical: "text-severity-critical",
+  high:     "text-severity-high",
+  medium:   "text-severity-medium",
+  low:      "text-severity-low",
+  info:     "text-text-muted",
+};
+
+export default function IndicatorDetailPage() {
+  const params      = useParams();
+  const indicatorId = params.id as string;
+
+  const { data: indicator, isLoading, error, mutate } = useSWR(
+    indicatorId ? `/indicators/${indicatorId}` : null,
+    () => getIndicator(indicatorId),
+  );
+
+  const { data: alertsData } = useSWR(
+    indicatorId ? `/indicators/${indicatorId}/alerts` : null,
+    () => getIndicatorAlerts(indicatorId, { limit: 20 }),
+  );
+
+  const [toggling, setToggling]   = useState(false);
+  const [fpBusy, setFpBusy]       = useState(false);
+
+  const handleToggle = async () => {
+    setToggling(true);
+    try {
+      await toggleIndicatorActive(indicatorId);
+      mutate();
+    } finally {
+      setToggling(false);
+    }
+  };
+
+  const handleFP = async () => {
+    setFpBusy(true);
+    try {
+      await markFalsePositive(indicatorId);
+      mutate();
+    } finally {
+      setFpBusy(false);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <Loader2 className="w-6 h-6 animate-spin text-text-muted" />
+      </div>
+    );
+  }
+
+  if (error || !indicator) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px] gap-2 text-text-muted text-sm">
+        <AlertTriangle className="w-5 h-5 text-severity-high" />
+        Indicator not found
+      </div>
+    );
   }
 
   const firstSeen = indicator.first_seen ? parseISO(indicator.first_seen) : null;
@@ -99,7 +158,7 @@ export default async function IndicatorDetailPage({
       <div className="card p-5">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-3 mb-2">
+            <div className="flex items-center gap-3 mb-2 flex-wrap">
               <span className="badge bg-bg-elevated border-border text-accent font-mono text-xs">
                 {indicator.type.toUpperCase()}
               </span>
@@ -119,9 +178,6 @@ export default async function IndicatorDetailPage({
               {indicator.value}
             </p>
           </div>
-
-          {/* Actions */}
-          <IndicatorActions id={String(indicator.id)} isFalsePositive={!!indicator.false_positive} />
 
           {/* Confidence gauge */}
           <div className="text-center flex-shrink-0">
@@ -168,6 +224,28 @@ export default async function IndicatorDetailPage({
             <span>{(indicator.sources ?? []).length} source(s)</span>
           </div>
         </div>
+
+        {/* Active toggle */}
+        <div className="mt-4 pt-4 border-t border-border flex items-center gap-3">
+          <button
+            onClick={handleToggle}
+            disabled={toggling}
+            className={clsx(
+              "btn text-xs flex items-center gap-1.5 border",
+              indicator.active
+                ? "btn-ghost border-status-warning/40 text-status-warning hover:bg-status-warning/10"
+                : "btn-ghost border-status-success/40 text-status-success hover:bg-status-success/10"
+            )}
+          >
+            <Power className="w-3.5 h-3.5" />
+            {toggling ? "Updating..." : indicator.active ? "Disable indicator" : "Enable indicator"}
+          </button>
+          <span className="text-2xs text-text-muted">
+            {indicator.active
+              ? "Active — being matched against incoming logs"
+              : "Inactive — not matched against incoming logs"}
+          </span>
+        </div>
       </div>
 
       {/* Content grid */}
@@ -192,7 +270,7 @@ export default async function IndicatorDetailPage({
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-semibold text-text-primary">{source.source_name}</p>
-                    <p className="text-2xs text-text-muted capitalize">{source.source_category.replace("_", " ")}</p>
+                    <p className="text-2xs text-text-muted capitalize">{source.source_category?.replace("_", " ")}</p>
                     <div className="flex gap-3 mt-1 text-2xs text-text-muted">
                       <span>Confidence: {source.confidence}%</span>
                       {source.last_seen && (
@@ -227,12 +305,14 @@ export default async function IndicatorDetailPage({
         <Section title="Analyst Actions" icon={Shield}>
           <div className="space-y-3">
             {!indicator.false_positive ? (
-              <form action={`/api/indicators/${indicator.id}/false-positive`} method="POST">
-                <button type="submit" className="btn-danger w-full justify-center text-xs">
-                  <XCircle className="w-3.5 h-3.5" />
-                  Mark as False Positive
-                </button>
-              </form>
+              <button
+                onClick={handleFP}
+                disabled={fpBusy}
+                className="btn-danger w-full justify-center text-xs"
+              >
+                <XCircle className="w-3.5 h-3.5" />
+                {fpBusy ? "Marking..." : "Mark as False Positive"}
+              </button>
             ) : (
               <div className="flex items-center gap-2 text-xs text-status-success p-3 bg-status-success/10 rounded-md border border-status-success/25">
                 <CheckCircle className="w-4 h-4" />
@@ -249,6 +329,71 @@ export default async function IndicatorDetailPage({
             </Link>
           </div>
         </Section>
+      </div>
+
+      {/* ── Triggered Alerts ─────────────────────────────────── */}
+      <div className="card p-5">
+        <div className="flex items-center gap-2 mb-4 pb-3 border-b border-border">
+          <ShieldAlert className="w-4 h-4 text-text-muted" strokeWidth={1.75} />
+          <h2 className="text-sm font-semibold text-text-primary">Triggered Alerts</h2>
+          {alertsData && (
+            <span className="ml-auto badge bg-bg-elevated border-border text-text-muted text-xs">
+              {alertsData.total}
+            </span>
+          )}
+        </div>
+
+        {!alertsData ? (
+          <p className="text-xs text-text-muted italic">Loading...</p>
+        ) : alertsData.total === 0 ? (
+          <p className="text-xs text-text-muted italic">No alerts triggered by this indicator.</p>
+        ) : (
+          <div className="overflow-x-auto rounded-lg border border-border">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-border bg-bg-elevated">
+                  <th className="text-left py-2.5 px-4 text-text-muted font-medium">Title</th>
+                  <th className="text-left py-2.5 px-4 text-text-muted font-medium w-20">Severity</th>
+                  <th className="text-left py-2.5 px-4 text-text-muted font-medium w-24">Status</th>
+                  <th className="text-left py-2.5 px-4 text-text-muted font-medium w-32">When</th>
+                </tr>
+              </thead>
+              <tbody>
+                {alertsData.items.map((alert: Alert) => (
+                  <tr key={alert.id} className="border-b border-border last:border-0 hover:bg-bg-elevated/50">
+                    <td className="py-2.5 px-4">
+                      <Link
+                        href={`/alerts/${alert.id}`}
+                        className="text-text-primary hover:text-accent transition-colors"
+                      >
+                        {alert.title}
+                      </Link>
+                      {alert.rule_name && (
+                        <span className="ml-2 font-mono text-text-muted text-2xs">{alert.rule_name}</span>
+                      )}
+                    </td>
+                    <td className="py-2.5 px-4">
+                      <span className={clsx("font-medium capitalize", SEV_CLASSES[alert.severity] ?? "text-text-muted")}>
+                        {alert.severity}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-4 capitalize text-text-secondary">{alert.status.replace("_", " ")}</td>
+                    <td className="py-2.5 px-4 text-text-muted">
+                      {alert.created_at
+                        ? formatDistanceToNow(parseISO(alert.created_at), { addSuffix: true })
+                        : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {alertsData.total > 20 && (
+              <p className="py-3 text-center text-xs text-text-muted">
+                Showing 20 of {alertsData.total} alerts
+              </p>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

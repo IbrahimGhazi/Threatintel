@@ -14,7 +14,7 @@ import {
   Cpu,
   Sliders,
   BookOpen,
-} from "lucide-react";
+  GitBranch, Link2} from "lucide-react";
 import clsx from "clsx";
 
 const NAV_ITEMS = [
@@ -27,8 +27,10 @@ const NAV_ITEMS = [
   { href: "/feeds",      label: "Feeds",        icon: Layers },
   { href: "/edl",        label: "EDL",          icon: List },
   { href: "/whitelist",  label: "Whitelist",    icon: Filter },
+  { href: "/network",    label: "Network",      icon: GitBranch },
   { href: "/firewall",   label: "Firewall",     icon: BookOpen },
-  { href: "/system",     label: "System",       icon: Settings },
+  { href: "/system",     label: "System",       icon: Settings },  { href: "/url-intel", label: "URL Intel", icon: Link2 },
+
 ];
 
 export function Sidebar() {

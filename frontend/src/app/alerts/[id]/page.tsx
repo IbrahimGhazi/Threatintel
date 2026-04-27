@@ -4,12 +4,16 @@
 import { useState } from "react";
 import { useParams } from "next/navigation";
 import useSWR from "swr";
-import { ArrowLeft, ExternalLink, Loader2, AlertTriangle, ShieldCheck } from "lucide-react";
+import { ArrowLeft, ExternalLink, Loader2, AlertTriangle, ShieldCheck, Terminal, Check, X, Edit2, ChevronDown, ChevronUp } from "lucide-react";
 import Link from "next/link";
 import { formatDistanceToNow, parseISO } from "date-fns";
 import clsx from "clsx";
 
-import { getAlertContext, whitelistFromAlert, type CreateWhitelistBody } from "@/lib/api";
+import {
+  getAlertContext, whitelistFromAlert, getRecommendations,
+  approveRecommendation, editRecommendation, ignoreRecommendation,
+  type CreateWhitelistBody, type Recommendation,
+} from "@/lib/api";
 import { SeverityBadge } from "@/components/ui/SeverityBadge";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -42,10 +46,59 @@ export default function AlertDetailPage() {
   const [wlSubmitting, setWlSubmitting] = useState(false);
   const [wlDone, setWlDone] = useState(false);
 
+  // Recommendations state
+  const [recEdit, setRecEdit] = useState<Record<string, string>>({});      // id → edit draft
+  const [recEditMode, setRecEditMode] = useState<Record<string, boolean>>({}); // id → editing?
+  const [recBusy, setRecBusy] = useState<Record<string, boolean>>({});
+  const [showHistory, setShowHistory] = useState(false);
+
   const { data, isLoading, error, mutate } = useSWR(
     alertId ? `/alerts/${alertId}/context` : null,
     () => getAlertContext(alertId),
   );
+
+  const { data: recsData, mutate: mutateRecs } = useSWR(
+    alertId ? `/recommendations?alert_id=${alertId}` : null,
+    () => getRecommendations({ alert_id: alertId, limit: 50 }),
+  );
+
+  const pendingRecs = (recsData?.items ?? []).filter(r => r.status === "pending" || r.status === "edited");
+  const historyRecs = (recsData?.items ?? []).filter(r => r.status === "approved" || r.status === "ignored");
+
+  const handleApprove = async (rec: Recommendation) => {
+    setRecBusy(b => ({ ...b, [rec.id]: true }));
+    try {
+      const editedConfig = recEdit[rec.id];
+      await approveRecommendation(rec.id, { analyst: "analyst", ...(editedConfig ? { edited_config: editedConfig } : {}) });
+      mutateRecs();
+    } finally {
+      setRecBusy(b => ({ ...b, [rec.id]: false }));
+      setRecEditMode(m => ({ ...m, [rec.id]: false }));
+    }
+  };
+
+  const handleIgnore = async (id: string) => {
+    setRecBusy(b => ({ ...b, [id]: true }));
+    try {
+      await ignoreRecommendation(id);
+      mutateRecs();
+    } finally {
+      setRecBusy(b => ({ ...b, [id]: false }));
+    }
+  };
+
+  const handleSaveEdit = async (rec: Recommendation) => {
+    const draft = recEdit[rec.id] ?? "";
+    if (!draft.trim()) return;
+    setRecBusy(b => ({ ...b, [rec.id]: true }));
+    try {
+      await editRecommendation(rec.id, draft);
+      mutateRecs();
+      setRecEditMode(m => ({ ...m, [rec.id]: false }));
+    } finally {
+      setRecBusy(b => ({ ...b, [rec.id]: false }));
+    }
+  };
 
   const handleWhitelist = async () => {
     if (!wlValue.trim()) return;
@@ -328,6 +381,148 @@ export default function AlertDetailPage() {
               </p>
             )}
           </div>
+        </div>
+      )}
+
+      {/* ── Response Recommendations ────────────────────────── */}
+      {recsData && recsData.total > 0 && (
+        <div className="card p-5 space-y-4">
+          <div className="flex items-center gap-2">
+            <Terminal className="w-4 h-4 text-accent" />
+            <h2 className="text-sm font-semibold text-text-primary">
+              Response Recommendations
+            </h2>
+            <span className="ml-auto badge bg-accent/10 border-accent/20 text-accent text-xs">
+              {pendingRecs.length} pending
+            </span>
+          </div>
+
+          {pendingRecs.length === 0 && (
+            <p className="text-xs text-text-muted italic">All recommendations have been actioned.</p>
+          )}
+
+          {pendingRecs.map((rec) => (
+            <div key={rec.id} className="rounded-lg border border-border bg-bg-elevated p-4 space-y-3">
+              <div className="flex flex-wrap items-start gap-2">
+                <span className="badge bg-accent/10 border-accent/20 text-accent text-2xs font-mono">
+                  {rec.rec_type.replace(/_/g, " ")}
+                </span>
+                <span className="badge bg-bg-surface border-border text-text-muted text-2xs">
+                  {rec.device_type.replace(/_/g, " ")}
+                </span>
+                {rec.status === "edited" && (
+                  <span className="badge bg-status-warning/15 border-status-warning/30 text-status-warning text-2xs">
+                    edited
+                  </span>
+                )}
+                <span className="ml-auto text-2xs text-text-muted">{rec.id.slice(-8)}</span>
+              </div>
+
+              <div>
+                <p className="text-xs font-semibold text-text-primary">{rec.title}</p>
+                <p className="text-xs text-text-secondary mt-0.5 leading-relaxed">{rec.description}</p>
+              </div>
+
+              {/* Config block */}
+              {!recEditMode[rec.id] ? (
+                <pre className="rounded bg-bg-surface border border-border p-3 text-2xs font-mono text-text-secondary overflow-x-auto whitespace-pre-wrap break-all">
+                  {rec.edited_config ?? rec.config_example ?? ""}
+                </pre>
+              ) : (
+                <textarea
+                  className="ti-input text-2xs font-mono w-full min-h-[120px] resize-y"
+                  value={recEdit[rec.id] ?? rec.edited_config ?? rec.config_example ?? ""}
+                  onChange={(e) => setRecEdit(r => ({ ...r, [rec.id]: e.target.value }))}
+                />
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                {recEditMode[rec.id] ? (
+                  <>
+                    <button
+                      onClick={() => handleSaveEdit(rec)}
+                      disabled={recBusy[rec.id]}
+                      className="btn btn-primary text-xs flex items-center gap-1.5"
+                    >
+                      <Check className="w-3 h-3" />
+                      {recBusy[rec.id] ? "Saving..." : "Save edit"}
+                    </button>
+                    <button
+                      onClick={() => setRecEditMode(m => ({ ...m, [rec.id]: false }))}
+                      className="btn btn-ghost text-xs"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => handleApprove(rec)}
+                      disabled={recBusy[rec.id]}
+                      className="btn btn-primary text-xs flex items-center gap-1.5"
+                    >
+                      <Check className="w-3 h-3" />
+                      {recBusy[rec.id] ? "Approving..." : "Approve"}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setRecEdit(r => ({ ...r, [rec.id]: rec.edited_config ?? rec.config_example ?? "" }));
+                        setRecEditMode(m => ({ ...m, [rec.id]: true }));
+                      }}
+                      className="btn btn-ghost text-xs flex items-center gap-1.5 border border-border"
+                    >
+                      <Edit2 className="w-3 h-3" />
+                      Edit config
+                    </button>
+                    <button
+                      onClick={() => handleIgnore(rec.id)}
+                      disabled={recBusy[rec.id]}
+                      className="btn btn-ghost text-xs flex items-center gap-1.5 text-text-muted"
+                    >
+                      <X className="w-3 h-3" />
+                      Ignore
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {/* History */}
+          {historyRecs.length > 0 && (
+            <div>
+              <button
+                onClick={() => setShowHistory(h => !h)}
+                className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text-secondary"
+              >
+                {showHistory ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                {historyRecs.length} actioned recommendation{historyRecs.length !== 1 ? "s" : ""}
+              </button>
+              {showHistory && (
+                <div className="mt-3 space-y-2">
+                  {historyRecs.map((rec) => (
+                    <div key={rec.id} className="rounded-lg border border-border/50 bg-bg-elevated/50 p-3 opacity-70">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={clsx(
+                          "badge text-2xs",
+                          rec.status === "approved"
+                            ? "bg-status-success/15 border-status-success/30 text-status-success"
+                            : "bg-text-muted/10 border-text-muted/30 text-text-muted"
+                        )}>
+                          {rec.status}
+                        </span>
+                        <span className="text-xs text-text-secondary font-medium">{rec.title}</span>
+                        <span className="ml-auto text-2xs text-text-muted font-mono">{rec.device_type}</span>
+                      </div>
+                      {rec.approved_by && (
+                        <p className="text-2xs text-text-muted mt-1">by {rec.approved_by}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

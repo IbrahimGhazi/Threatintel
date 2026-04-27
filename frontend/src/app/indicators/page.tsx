@@ -7,9 +7,9 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
   Search, ChevronLeft, ChevronRight,
-  Plus, ExternalLink, AlertTriangle,
+  Plus, ExternalLink, AlertTriangle, Flag, Trash2,
 } from "lucide-react";
-import { getIndicators, type Indicator } from "@/lib/api";
+import { getIndicators, markFalsePositive, deleteIndicator, type Indicator } from "@/lib/api";
 import { SeverityBadge } from "@/components/ui/SeverityBadge";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { formatDistanceToNow, parseISO } from "date-fns";
@@ -51,8 +51,12 @@ function IndicatorsContent() {
   const [sevFilter, setSev]   = useState("");
   const [page, setPage]       = useState(0);
 
-  const { data, isLoading, error } = useSWR(
-    ["indicators", q, typeFilter, sevFilter, page],
+  // Per-row action state: id → "fp" | "delete" | "confirm-delete"
+  const [rowAction, setRowAction] = useState<Record<string, string>>({});
+
+  const swrKey = ["indicators", q, typeFilter, sevFilter, page];
+  const { data, isLoading, error, mutate } = useSWR(
+    swrKey,
     () => getIndicators({
       q: q || undefined,
       type: typeFilter || undefined,
@@ -62,6 +66,36 @@ function IndicatorsContent() {
     }),
     { refreshInterval: 30000 }
   );
+
+  const handleFP = async (id: string) => {
+    setRowAction(r => ({ ...r, [id]: "fp" }));
+    try {
+      await markFalsePositive(id);
+      mutate(
+        prev => prev
+          ? { ...prev, items: prev.items.filter((i: Indicator) => i.id !== id), total: prev.total - 1 }
+          : prev,
+        false
+      );
+    } finally {
+      setRowAction(r => { const n = { ...r }; delete n[id]; return n; });
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    setRowAction(r => ({ ...r, [id]: "delete" }));
+    try {
+      await deleteIndicator(id);
+      mutate(
+        prev => prev
+          ? { ...prev, items: prev.items.filter((i: Indicator) => i.id !== id), total: prev.total - 1 }
+          : prev,
+        false
+      );
+    } finally {
+      setRowAction(r => { const n = { ...r }; delete n[id]; return n; });
+    }
+  };
 
   const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0;
 
@@ -138,11 +172,13 @@ function IndicatorsContent() {
                 <th>Sources</th>
                 <th>Last Seen</th>
                 <th>Tags</th>
-                <th className="w-10"></th>
+                <th className="w-40 text-right pr-3">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {(data?.items ?? []).map((ind: Indicator) => (
+              {(data?.items ?? []).map((ind: Indicator) => {
+                const acting = rowAction[ind.id];
+                return (
                 <tr key={ind.id}>
                   <td>
                     <span className={clsx(
@@ -190,15 +226,65 @@ function IndicatorsContent() {
                     </div>
                   </td>
                   <td>
-                    <Link
-                      href={`/indicators/${ind.id}`}
-                      className="p-1 text-text-muted hover:text-accent transition-colors"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                    </Link>
+                    <div className="flex items-center justify-end gap-1 pr-1">
+                      {/* View detail */}
+                      <Link
+                        href={`/indicators/${ind.id}`}
+                        className="p-1 text-text-muted hover:text-accent transition-colors"
+                        title="View detail"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </Link>
+
+                      {/* False-positive button — hidden if already marked */}
+                      {!ind.false_positive && (
+                        <button
+                          onClick={() => handleFP(ind.id)}
+                          disabled={!!acting}
+                          title="Mark as false positive"
+                          className="p-1 text-text-muted hover:text-severity-medium transition-colors disabled:opacity-40"
+                        >
+                          {acting === "fp"
+                            ? <span className="text-2xs text-severity-medium">…</span>
+                            : <Flag className="w-3.5 h-3.5" />
+                          }
+                        </button>
+                      )}
+
+                      {/* Delete — two-step confirm */}
+                      {acting === "confirm-delete" ? (
+                        <span className="flex items-center gap-1">
+                          <button
+                            onClick={() => handleDelete(ind.id)}
+                            className="text-2xs px-1.5 py-0.5 rounded bg-severity-critical/20 text-severity-critical border border-severity-critical/40 hover:bg-severity-critical/30"
+                          >
+                            Confirm
+                          </button>
+                          <button
+                            onClick={() => setRowAction(r => { const n = { ...r }; delete n[ind.id]; return n; })}
+                            className="text-2xs text-text-muted hover:text-text-primary px-1"
+                          >
+                            ✕
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => setRowAction(r => ({ ...r, [ind.id]: "confirm-delete" }))}
+                          disabled={!!acting}
+                          title="Delete indicator"
+                          className="p-1 text-text-muted hover:text-severity-critical transition-colors disabled:opacity-40"
+                        >
+                          {acting === "delete"
+                            ? <span className="text-2xs text-severity-critical">…</span>
+                            : <Trash2 className="w-3.5 h-3.5" />
+                          }
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
               {data?.items?.length === 0 && (
                 <tr>
                   <td colSpan={8} className="text-center py-12 text-text-muted text-sm">
