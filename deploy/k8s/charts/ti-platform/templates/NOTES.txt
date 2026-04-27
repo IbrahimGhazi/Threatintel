@@ -1,0 +1,36 @@
+ti-platform ({{ .Chart.Version }}) installed to namespace "{{ .Release.Namespace }}".
+
+Next steps:
+
+1. Verify all pods are ready:
+     kubectl -n {{ .Release.Namespace }} get pods
+
+2. Fetch the external addresses:
+     kubectl -n {{ .Release.Namespace }} get svc \
+       {{ include "ti.svcName" (dict "ctx" . "svc" "icap") }} \
+       {{ include "ti.svcName" (dict "ctx" . "svc" "logserver") }}-udp \
+       {{ include "ti.svcName" (dict "ctx" . "svc" "logserver") }}-tcp
+
+3. Ingress endpoints:
+{{- if .Values.ingress.enabled }}
+     API : https://{{ .Values.ingress.hosts.api.host }}
+     App : https://{{ .Values.ingress.hosts.app.host }}
+{{- else }}
+     Ingress is disabled; port-forward to access services.
+{{- end }}
+
+4. Observability:
+{{- if .Values.monitoring.enabled }}
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }}-monitoring-grafana 3000:80
+{{- else }}
+     Monitoring disabled. Enable via --set monitoring.enabled=true
+{{- end }}
+
+5. Secrets:
+{{- if .Values.secrets.existingSecret }}
+     Using pre-existing Secret: {{ .Values.secrets.existingSecret }}
+{{- else if .Values.secrets.create.enabled }}
+     *** Chart-created Secret. DEV ONLY. Rotate before production. ***
+{{- else }}
+     No Secret found. Create one named "{{ .Release.Name }}-secrets" before services will start.
+{{- end }}

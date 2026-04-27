@@ -1,0 +1,21 @@
+name: outbound_data_burst
+title: "Outbound Data Burst: {src_ip} — {count} large transfers"
+description: "Source IP {src_ip} initiated {count} connections with significant outbound data transfer in {window}s, possibly indicating data exfiltration."
+severity: high
+window: $CORRELATION_DATA_BURST_WINDOW
+threshold: 5
+group_by: src_ip
+
+detection:
+  condition: count
+  filters:
+    - field: bytes_out
+      op: gt
+      value: 1048576
+
+mitre_attack:
+  - tactic: "Exfiltration"
+    technique_id: "T1041"
+    technique: "Exfiltration Over C2 Channel"
+
+recommended_action: "Investigate the destination IPs and volume of data transferred. Check for unauthorized file uploads or data exfiltration."

@@ -1,0 +1,24 @@
+name: dns_tunneling
+title: "DNS Tunneling Suspected: {src_ip} — {count} DNS queries"
+description: "Source IP {src_ip} generated {count} DNS queries within {window}s, consistent with DNS tunneling or data exfiltration."
+severity: high
+window: $CORRELATION_DNS_TUNNELING_WINDOW
+threshold: 50
+group_by: src_ip
+
+detection:
+  condition: count
+  filters:
+    - field: dst_port
+      op: eq
+      value: 53
+
+mitre_attack:
+  - tactic: "Command and Control"
+    technique_id: "T1071.004"
+    technique: "DNS"
+  - tactic: "Exfiltration"
+    technique_id: "T1048"
+    technique: "Exfiltration Over Alternative Protocol"
+
+recommended_action: "Analyze DNS query payloads for encoded data. Block the source if tunneling is confirmed."

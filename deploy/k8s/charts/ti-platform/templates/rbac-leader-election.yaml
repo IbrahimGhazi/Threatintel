@@ -1,0 +1,41 @@
+{{/*
+  Singleton services (ingestion, correlation) use coordination.k8s.io
+  Leases to guarantee exactly-one execution across restarts and rollouts.
+  This tiny Role is shared — narrow `resourceNames` so each service can
+  only touch its own lease.
+*/}}
+{{- range $svc := list "ingestion" "correlation" }}
+{{- $cfg := index $.Values $svc }}
+{{- if and $cfg.enabled $cfg.leaderElection.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ printf "%s-%s-leader" $.Release.Name $svc }}
+  namespace: {{ $.Release.Namespace }}
+  labels: {{- include "ti.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    resourceNames: [{{ $cfg.leaderElection.leaseName | quote }}]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ printf "%s-%s-leader" $.Release.Name $svc }}
+  namespace: {{ $.Release.Namespace }}
+  labels: {{- include "ti.labels" $ | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ printf "%s-%s" $.Release.Name $svc }}
+    namespace: {{ $.Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ printf "%s-%s-leader" $.Release.Name $svc }}
+---
+{{- end }}
+{{- end }}

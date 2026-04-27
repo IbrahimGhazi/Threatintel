@@ -1,0 +1,9 @@
+nats-py==2.6.0
+asyncpg==0.29.0
+sqlalchemy[asyncio]==2.0.25
+httpx==0.26.0
+orjson==3.9.12
+structlog==24.1.0
+prometheus-client==0.19.0
+tldextract==5.1.1
+pyyaml==6.0.1

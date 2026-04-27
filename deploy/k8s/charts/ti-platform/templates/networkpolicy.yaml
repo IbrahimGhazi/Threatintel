@@ -1,0 +1,155 @@
+{{- if .Values.networkPolicy.enabled }}
+# =============================================================================
+# Default-deny ingress in the platform namespace. Every platform Deployment
+# then opts in via its own allow rule below.
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-default-deny
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: ti-platform
+  policyTypes: ["Ingress"]
+---
+# =============================================================================
+# Egress: allow DNS + cluster-internal traffic for all platform pods.
+# Egress to the public internet is left permissive (feed ingestion needs it);
+# narrow in values-prod.yaml by adding `to` CIDRs per feed provider.
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-allow-egress-baseline
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: ti-platform
+  policyTypes: ["Egress"]
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    # In-cluster services (other platform pods + subcharts)
+    - to:
+        - podSelector: {}
+    # External HTTPS (feeds, IOC providers). Narrow CIDR in prod.
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.dnsEgressCidr | quote }}
+      ports:
+        - { port: 443, protocol: TCP }
+        - { port: 80,  protocol: TCP }
+---
+# =============================================================================
+# api: allow ingress from ingress-controller + platform workers.
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-api-ingress
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: api
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: ["Ingress"]
+  ingress:
+    # Ingress controller (matches typical controller labels; update for your setup).
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+      ports: [{ port: 8000, protocol: TCP }]
+    # Fellow platform pods (frontend SSR calls, icap lookups, correlation).
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/part-of: ti-platform }
+      ports: [{ port: 8000, protocol: TCP }]
+    # Prometheus scrape
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: monitoring }
+      ports: [{ port: 8000, protocol: TCP }]
+---
+# =============================================================================
+# frontend: ingress-controller only.
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-frontend-ingress
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+      ports: [{ port: 3000, protocol: TCP }]
+---
+# =============================================================================
+# icap + logserver: externally reachable via LoadBalancer → open to world.
+# LB controller enforces source restrictions; here we accept all ingress.
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-external-tcp-udp
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app.kubernetes.io/name, operator: In, values: [icap, logserver] }
+      - { key: app.kubernetes.io/instance, operator: In, values: [{{ .Release.Name }}] }
+  policyTypes: ["Ingress"]
+  ingress:
+    - ports:
+        - { port: 1344, protocol: TCP }
+        - { port: 5514, protocol: TCP }
+        - { port: 5514, protocol: UDP }
+        - { port: 9514, protocol: TCP }
+---
+# =============================================================================
+# Data tier (subchart-deployed postgres/redis/nats): only platform pods.
+# The subchart labels include app.kubernetes.io/name={postgresql,redis,nats}
+# and app.kubernetes.io/instance={release}.
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-data-tier-ingress
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app.kubernetes.io/name, operator: In, values: [postgresql, redis, nats] }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/part-of: ti-platform }
+      ports:
+        - { port: 5432, protocol: TCP }   # postgres
+        - { port: 6379, protocol: TCP }   # redis
+        - { port: 26379, protocol: TCP }  # redis sentinel
+        - { port: 4222, protocol: TCP }   # nats
+        - { port: 8222, protocol: TCP }   # nats mon
+        - { port: 6222, protocol: TCP }   # nats cluster
+{{- end }}

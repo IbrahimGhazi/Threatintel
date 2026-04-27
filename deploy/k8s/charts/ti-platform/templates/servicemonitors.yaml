@@ -1,0 +1,30 @@
+{{- if and .Values.monitoring.enabled .Values.monitoring.serviceMonitors.enabled }}
+{{/*
+  Prometheus Operator ServiceMonitors for every in-repo service.
+  Assumes each service exposes /metrics on the listed port.
+*/}}
+{{- range $svc := list "api" "enrichment" "correlation" "icap" "logserver" "sandbox" }}
+{{- $cfg := index $.Values $svc }}
+{{- if $cfg.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ printf "%s-%s" $.Release.Name $svc }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "ti.labels" $ | nindent 4 }}
+    release: {{ $.Release.Name }}          # picked up by kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames: [{{ $.Release.Namespace | quote }}]
+  selector:
+    matchLabels: {{- include "ti.selectorLabels" (dict "ctx" $ "svc" $svc) | nindent 6 }}
+  endpoints:
+    - port: {{ if eq $svc "api" }}http{{ else if eq $svc "logserver" }}http{{ else }}metrics{{ end }}
+      path: /metrics
+      interval: {{ $.Values.monitoring.serviceMonitors.interval }}
+      scrapeTimeout: 10s
+---
+{{- end }}
+{{- end }}
+{{- end }}

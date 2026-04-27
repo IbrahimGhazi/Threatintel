@@ -1,0 +1,154 @@
+# ============================================================
+# Production overrides: HA, external DB, multi-zone, managed secrets.
+# Usage: helm install ti ./charts/ti-platform -f values-prod.yaml \
+#          --set secrets.existingSecret=ti-platform-secrets
+# ============================================================
+
+global:
+  imageRegistry: "ghcr.io/your-org"
+  storageClass: "fast-ssd"           # e.g. gp3, pd-ssd, managed-premium
+  topologySpread:
+    enabled: true
+    topologyKey: topology.kubernetes.io/zone
+
+# --- Managed DB: keep subchart disabled, point at external endpoint ---
+postgresql:
+  enabled: false
+externalDatabase:
+  host: "ti-platform.xxxxx.us-east-1.rds.amazonaws.com"
+  port: 5432
+  database: "tiplatform"
+  username: "tiplatform"
+
+# --- In-cluster Redis with Sentinel, 3 replicas ---
+redis:
+  enabled: true
+  architecture: replication
+  master:
+    persistence: { size: 20Gi }
+    resources:
+      requests: { cpu: "250m", memory: "512Mi" }
+      limits:   { cpu: "2",    memory: "2Gi"   }
+  replica:
+    replicaCount: 3
+    persistence: { size: 20Gi }
+  sentinel:
+    enabled: true
+    quorum: 2
+
+# --- NATS JetStream 5-node cluster ---
+nats:
+  enabled: true
+  config:
+    cluster:
+      enabled: true
+      replicas: 5
+    jetstream:
+      fileStore: { pvc: { size: 50Gi } }
+
+# --- Platform services, tuned for load ---
+api:
+  replicaCount: 5
+  resources:
+    requests: { cpu: "500m", memory: "1Gi" }
+    limits:   { cpu: "4",    memory: "2Gi" }
+  autoscaling:
+    minReplicas: 5
+    maxReplicas: 50
+    targetCPUUtilizationPercentage: 65
+  pdb: { minAvailable: 3 }
+
+enrichment:
+  replicaCount: 4
+  resources:
+    requests: { cpu: "500m", memory: "512Mi" }
+    limits:   { cpu: "2",    memory: "1Gi"   }
+  autoscaling:
+    minReplicas: 4
+    maxReplicas: 30
+    keda: { enabled: true, lagThreshold: "100" }
+
+correlation:
+  resources:
+    requests: { cpu: "500m", memory: "512Mi" }
+    limits:   { cpu: "2",    memory: "2Gi"   }
+
+icap:
+  replicaCount: 4
+  resources:
+    requests: { cpu: "500m", memory: "512Mi" }
+    limits:   { cpu: "2",    memory: "1Gi"   }
+  autoscaling:
+    minReplicas: 4
+    maxReplicas: 25
+  service:
+    annotations:
+      # AWS NLB with source IP preservation
+      service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+      service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+  pdb: { minAvailable: 2 }
+
+logserver:
+  replicaCount: 3
+  autoscaling:
+    minReplicas: 3
+    maxReplicas: 15
+  service:
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+      service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+
+sandbox:
+  replicaCount: 2
+  autoscaling:
+    minReplicas: 2
+    maxReplicas: 20
+    keda: { enabled: true, lagThreshold: "20" }
+  storage:
+    mode: s3
+    s3:
+      endpoint: "https://s3.us-east-1.amazonaws.com"
+      bucket: "ti-platform-prod-sandbox"
+      region: "us-east-1"
+  jobs:
+    runtimeClassName: "gvisor"       # require sandboxed runtime for detonation
+
+frontend:
+  replicaCount: 5
+  autoscaling:
+    minReplicas: 5
+    maxReplicas: 30
+  pdb: { minAvailable: 3 }
+
+ingress:
+  enabled: true
+  className: nginx
+  tls:
+    enabled: true
+    clusterIssuer: letsencrypt-prod
+  hosts:
+    api: { host: api.ti.example.com, paths: [{ path: /, pathType: Prefix }] }
+    app: { host: app.ti.example.com, paths: [{ path: /, pathType: Prefix }] }
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/limit-rpm: "6000"
+    nginx.ingress.kubernetes.io/limit-connections: "500"
+
+networkPolicy:
+  enabled: true
+
+monitoring:
+  enabled: true
+  prometheus:
+    prometheusSpec:
+      retention: 90d
+      storageSpec:
+        volumeClaimTemplate:
+          spec:
+            resources: { requests: { storage: 500Gi } }
+
+# Production: NEVER create secrets via helm. Pre-create via
+# ExternalSecrets Operator / Vault Agent / Sealed Secrets.
+secrets:
+  existingSecret: "ti-platform-secrets"

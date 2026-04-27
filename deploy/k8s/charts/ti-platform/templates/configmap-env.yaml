@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-env
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+data:
+  # Non-sensitive cross-service config. Use `envFrom` in pods.
+  CLUSTER_DOMAIN: {{ .Values.global.clusterDomain | quote }}
+  ENVIRONMENT: {{ .Values.api.env.ENVIRONMENT | default "production" | quote }}
+  LOG_LEVEL: {{ .Values.api.env.LOG_LEVEL | default "INFO" | quote }}

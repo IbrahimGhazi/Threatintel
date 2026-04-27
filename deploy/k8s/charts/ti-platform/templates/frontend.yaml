@@ -1,0 +1,106 @@
+{{- if .Values.frontend.enabled }}
+{{- $svc := "frontend" }}
+{{- $cfg := .Values.frontend }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  replicas: {{ $cfg.replicaCount }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 25%, maxUnavailable: 0 }
+  selector:
+    matchLabels: {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ti.labels" . | nindent 8 }}
+        {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+      priorityClassName: {{ .Values.priorityClasses.high.name }}
+      terminationGracePeriodSeconds: 30
+      securityContext: {{- include "ti.podSecurityContext" . | nindent 8 }}
+      {{- include "ti.spreadAndAffinity" (dict "ctx" . "svc" $svc) | nindent 6 }}
+      containers:
+        - name: frontend
+          image: {{ include "ti.image" (dict "ctx" . "cfg" $cfg) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- include "ti.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - { name: http, containerPort: {{ $cfg.service.port }} }
+          env:
+            - name: NODE_ENV
+              value: {{ $cfg.env.NODE_ENV | quote }}
+            {{- range $k, $v := $cfg.publicEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          resources: {{- toYaml $cfg.resources | nindent 12 }}
+          startupProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 5
+            failureThreshold: 20
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 5
+          volumeMounts:
+            - { name: cache, mountPath: /app/.next/cache }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: cache
+          emptyDir: { sizeLimit: 512Mi }
+        - name: tmp
+          emptyDir: { sizeLimit: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  type: {{ $cfg.service.type }}
+  ports:
+    - { name: http, port: {{ $cfg.service.port }}, targetPort: http }
+  selector: {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 4 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ $cfg.pdb.minAvailable }}
+  selector:
+    matchLabels: {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 6 }}
+{{- if $cfg.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  minReplicas: {{ $cfg.autoscaling.minReplicas }}
+  maxReplicas: {{ $cfg.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: {{ $cfg.autoscaling.targetCPUUtilizationPercentage }} }
+{{- end }}
+{{- end }}

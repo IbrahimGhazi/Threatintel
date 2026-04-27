@@ -1,0 +1,135 @@
+{{- if .Values.api.enabled }}
+{{- $svc := "api" }}
+{{- $cfg := .Values.api }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+  annotations:
+    # Force rollout when config/secret changes.
+    checksum/config: {{ include (print $.Template.BasePath "/configmap-env.yaml") . | sha256sum }}
+spec:
+  replicas: {{ $cfg.replicaCount }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+  selector:
+    matchLabels: {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ti.labels" . | nindent 8 }}
+        {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ $cfg.service.port }}"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+      priorityClassName: {{ .Values.priorityClasses.high.name }}
+      terminationGracePeriodSeconds: 60
+      securityContext: {{- include "ti.podSecurityContext" . | nindent 8 }}
+      {{- include "ti.spreadAndAffinity" (dict "ctx" . "svc" $svc) | nindent 6 }}
+      containers:
+        - name: api
+          image: {{ include "ti.image" (dict "ctx" . "cfg" $cfg) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- include "ti.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ $cfg.service.port }}
+              protocol: TCP
+          env:
+            {{- include "ti.commonEnv" . | nindent 12 }}
+            {{- range $k, $v := $cfg.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            # Third-party API keys — optional, pulled from same secret.
+            - name: ABUSEIPDB_API_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "ti.secretName" . }}, key: ABUSEIPDB_API_KEY, optional: true } }
+            - name: VIRUSTOTAL_API_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "ti.secretName" . }}, key: VIRUSTOTAL_API_KEY, optional: true } }
+          resources: {{- toYaml $cfg.resources | nindent 12 }}
+          startupProbe:
+            httpGet: { path: {{ $cfg.probes.startupPath }}, port: http }
+            periodSeconds: 5
+            failureThreshold: 30   # up to 150s for cold start
+          livenessProbe:
+            httpGet: { path: {{ $cfg.probes.livenessPath }}, port: http }
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: {{ $cfg.probes.readinessPath }}, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          lifecycle:
+            preStop:
+              # Give load balancers time to deregister before SIGTERM.
+              exec: { command: ["/bin/sh", "-c", "sleep 15"] }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  type: {{ $cfg.service.type }}
+  ports:
+    - name: http
+      port: {{ $cfg.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector: {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 4 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ $cfg.pdb.minAvailable }}
+  selector:
+    matchLabels: {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 6 }}
+---
+{{- if $cfg.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  minReplicas: {{ $cfg.autoscaling.minReplicas }}
+  maxReplicas: {{ $cfg.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: {{ $cfg.autoscaling.targetCPUUtilizationPercentage }} }
+    - type: Resource
+      resource:
+        name: memory
+        target: { type: Utilization, averageUtilization: {{ $cfg.autoscaling.targetMemoryUtilizationPercentage }} }
+  behavior: {{- toYaml $cfg.autoscaling.behavior | nindent 4 }}
+{{- end }}
+{{- end }}

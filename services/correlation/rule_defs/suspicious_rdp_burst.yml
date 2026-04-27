@@ -1,0 +1,22 @@
+name: suspicious_rdp_burst
+title: "Suspicious RDP Burst: {src_ip} — {count} connections"
+description: "Source IP {src_ip} initiated {count} RDP connections to {distinct_count} hosts in {window}s."
+severity: high
+window: 300
+threshold: 5
+group_by: src_ip
+
+detection:
+  condition: count_distinct
+  field: dst_ip
+  filters:
+    - field: dst_port
+      op: eq
+      value: 3389
+
+mitre_attack:
+  - tactic: "Lateral Movement"
+    technique_id: "T1021.001"
+    technique: "Remote Desktop Protocol"
+
+recommended_action: "Investigate the source host for compromise. Review RDP access patterns and ensure MFA is enabled for remote access."

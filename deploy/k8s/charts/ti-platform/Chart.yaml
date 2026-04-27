@@ -1,0 +1,45 @@
+apiVersion: v2
+name: ti-platform
+description: |
+  Threat Intelligence Platform — production Helm chart.
+  Provides a resilient, horizontally-scalable Kubernetes deployment
+  with HPA, PDB, NetworkPolicy, Ingress, cert-manager TLS, and
+  pluggable object storage for shared sandbox artifacts.
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+kubeVersion: ">= 1.26.0-0"
+keywords:
+  - threat-intelligence
+  - security
+  - siem
+  - soc
+maintainers:
+  - name: ti-platform
+home: https://example.com/ti-platform
+
+# Optional subcharts. Enable via values.yaml (e.g. postgresql.enabled=true).
+# If you run a managed DB (RDS, CloudSQL, Aiven) keep these disabled and
+# point the platform services at the external endpoints via values.
+dependencies:
+  - name: postgresql
+    version: "15.5.11"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgresql.enabled
+  - name: redis
+    version: "19.6.2"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: redis.enabled
+  - name: nats
+    version: "1.2.2"
+    repository: "https://nats-io.github.io/k8s/helm/charts/"
+    condition: nats.enabled
+  - name: kube-prometheus-stack
+    version: "61.3.2"
+    repository: "https://prometheus-community.github.io/helm-charts"
+    alias: monitoring
+    condition: monitoring.enabled
+  - name: minio
+    version: "14.7.11"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: minio.enabled

@@ -1,0 +1,70 @@
+{{- if .Values.correlation.enabled }}
+{{- $svc := "correlation" }}
+{{- $cfg := .Values.correlation }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  replicas: {{ $cfg.replicaCount }}
+  revisionHistoryLimit: 3
+  # Leader-elected singleton: baseline state is in-memory and flushed to DB.
+  # Recreate ensures no two leaders simultaneously write baselines.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ti.labels" . | nindent 8 }}
+        {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+      priorityClassName: {{ .Values.priorityClasses.default.name }}
+      terminationGracePeriodSeconds: 60   # allow baseline flush to DB
+      securityContext: {{- include "ti.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: correlation
+          image: {{ include "ti.image" (dict "ctx" . "cfg" $cfg) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- include "ti.containerSecurityContext" . | nindent 12 }}
+          env:
+            {{- include "ti.commonEnv" . | nindent 12 }}
+            - name: LEADER_ELECTION_ENABLED
+              value: {{ $cfg.leaderElection.enabled | quote }}
+            - name: LEADER_ELECTION_LEASE
+              value: {{ $cfg.leaderElection.leaseName | quote }}
+            - name: LEADER_ELECTION_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: API_URL
+              value: "http://{{ include "ti.svcName" (dict "ctx" . "svc" "api") }}.{{ .Release.Namespace }}.svc.{{ .Values.global.clusterDomain }}:{{ .Values.api.service.port }}"
+            {{- range $k, $v := $cfg.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          resources: {{- toYaml $cfg.resources | nindent 12 }}
+          # Correlation is a NATS subscriber / APScheduler worker with no HTTP
+          # server today — use trivial exec probes until /healthz exists.
+          livenessProbe:
+            exec: { command: ["/bin/true"] }
+            initialDelaySeconds: 30
+            periodSeconds: 60
+          readinessProbe:
+            exec: { command: ["/bin/true"] }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          lifecycle:
+            preStop:
+              # Graceful pause before SIGTERM; baseline flushing is on shutdown-hook.
+              exec: { command: ["/bin/sh", "-c", "sleep 20"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 128Mi }
+{{- end }}

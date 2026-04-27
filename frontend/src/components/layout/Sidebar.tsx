@@ -14,7 +14,7 @@ import {
   Cpu,
   Sliders,
   BookOpen,
-  GitBranch, Link2} from "lucide-react";
+  GitBranch, Link2, KeyRound} from "lucide-react";
 import clsx from "clsx";
 
 const NAV_ITEMS = [
@@ -29,8 +29,9 @@ const NAV_ITEMS = [
   { href: "/whitelist",  label: "Whitelist",    icon: Filter },
   { href: "/network",    label: "Network",      icon: GitBranch },
   { href: "/firewall",   label: "Firewall",     icon: BookOpen },
-  { href: "/system",     label: "System",       icon: Settings },  { href: "/url-intel", label: "URL Intel", icon: Link2 },
-
+  { href: "/system",     label: "System",       icon: Settings },
+  { href: "/url-intel",  label: "URL Intel",    icon: Link2 },
+  { href: "/settings/api-keys", label: "API Keys", icon: KeyRound },
 ];
 
 export function Sidebar() {

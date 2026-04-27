@@ -1,0 +1,41 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    platform: ti-platform
+    environment: production
+
+scrape_configs:
+  - job_name: 'ti-api'
+    static_configs:
+      - targets: ['api:8000']
+    metrics_path: /metrics
+
+  - job_name: 'ti-ingestion'
+    static_configs:
+      - targets: ['ingestion:9001']
+
+  - job_name: 'ti-enrichment'
+    static_configs:
+      - targets: ['enrichment:9002']
+
+  - job_name: 'ti-icap'
+    static_configs:
+      - targets: ['icap:9003']
+
+  - job_name: 'ti-correlation'
+    static_configs:
+      - targets: ['correlation:9004']
+
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+
+  - job_name: 'nats'
+    static_configs:
+      - targets: ['nats:8222']
+    metrics_path: /metrics

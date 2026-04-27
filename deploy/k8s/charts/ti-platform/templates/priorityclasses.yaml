@@ -1,0 +1,28 @@
+{{- if .Values.priorityClasses.create }}
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Values.priorityClasses.critical.name }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+value: {{ .Values.priorityClasses.critical.value }}
+globalDefault: false
+description: "ti-platform data tier (postgres, redis, nats)"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Values.priorityClasses.high.name }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+value: {{ .Values.priorityClasses.high.value }}
+globalDefault: false
+description: "ti-platform request-path services (api, frontend, ingress)"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Values.priorityClasses.default.name }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+value: {{ .Values.priorityClasses.default.value }}
+globalDefault: false
+description: "ti-platform async workers (ingestion, enrichment, correlation, sandbox)"
+{{- end }}

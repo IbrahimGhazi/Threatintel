@@ -1,0 +1,64 @@
+{{/*
+  Sandbox worker needs least-privilege access to create Jobs in a
+  dedicated namespace. Isolating sandbox Jobs in their own namespace
+  means even if a detonated sample breaks out of its pod, it cannot
+  reach platform services via NetworkPolicy or ServiceAccount tokens.
+*/}}
+{{- if .Values.sandbox.enabled }}
+{{- $ns := default (printf "%s-sandbox-jobs" .Release.Name) .Values.sandbox.jobs.namespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    {{- include "ti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sandbox-jobs
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+# Role scoped to the sandbox-jobs namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-sandbox-job-manager
+  namespace: {{ $ns }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete", "deletecollection"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list", "create", "delete"]
+    # Only sandbox-scoped configmaps/secrets; further restrict by name in
+    # production via an OPA/Kyverno policy.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-sandbox-job-manager
+  namespace: {{ $ns }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-sandbox
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}-sandbox-job-manager
+---
+# ServiceAccount used *inside* sandbox Jobs. Zero permissions.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox-job-runner
+  namespace: {{ $ns }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+{{- end }}

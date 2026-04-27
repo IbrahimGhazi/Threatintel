@@ -1,0 +1,123 @@
+{{- if .Values.icap.enabled }}
+{{- $svc := "icap" }}
+{{- $cfg := .Values.icap }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  replicas: {{ $cfg.replicaCount }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector:
+    matchLabels: {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ti.labels" . | nindent 8 }}
+        {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+      priorityClassName: {{ .Values.priorityClasses.high.name }}
+      terminationGracePeriodSeconds: 90     # bounds longest ICAP transaction
+      securityContext: {{- include "ti.podSecurityContext" . | nindent 8 }}
+      {{- include "ti.spreadAndAffinity" (dict "ctx" . "svc" $svc) | nindent 6 }}
+      containers:
+        - name: icap
+          image: {{ include "ti.image" (dict "ctx" . "cfg" $cfg) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- include "ti.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - { name: icap, containerPort: 1344, protocol: TCP }
+            - { name: metrics, containerPort: 9100 }
+          env:
+            - name: REDIS_HOST
+              value: {{ include "ti.redisHost" . | quote }}
+            - name: REDIS_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "ti.secretName" . }}, key: REDIS_PASSWORD } }
+            - name: API_URL
+              value: "http://{{ include "ti.svcName" (dict "ctx" . "svc" "api") }}.{{ .Release.Namespace }}.svc.{{ .Values.global.clusterDomain }}:{{ .Values.api.service.port }}"
+            - name: API_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "ti.secretName" . }}, key: API_KEY } }
+            - name: ICAP_HOST
+              value: "0.0.0.0"
+            - name: ICAP_PORT
+              value: "1344"
+            {{- range $k, $v := $cfg.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          resources: {{- toYaml $cfg.resources | nindent 12 }}
+          startupProbe:
+            tcpSocket: { port: icap }
+            periodSeconds: 5
+            failureThreshold: 20
+          livenessProbe:
+            tcpSocket: { port: icap }
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket: { port: icap }
+            periodSeconds: 5
+          lifecycle:
+            preStop:
+              exec: { command: ["/bin/sh", "-c", "sleep 20"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+  annotations: {{- toYaml $cfg.service.annotations | nindent 4 }}
+spec:
+  type: {{ $cfg.service.type }}
+  {{- if $cfg.service.loadBalancerIP }}
+  loadBalancerIP: {{ $cfg.service.loadBalancerIP | quote }}
+  {{- end }}
+  externalTrafficPolicy: {{ $cfg.service.externalTrafficPolicy }}
+  ports:
+    - { name: icap, port: {{ $cfg.service.port }}, targetPort: icap, protocol: TCP }
+  selector: {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 4 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ $cfg.pdb.minAvailable }}
+  selector:
+    matchLabels: {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 6 }}
+{{- if $cfg.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  minReplicas: {{ $cfg.autoscaling.minReplicas }}
+  maxReplicas: {{ $cfg.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: {{ $cfg.autoscaling.targetCPUUtilizationPercentage }} }
+{{- end }}
+{{- end }}

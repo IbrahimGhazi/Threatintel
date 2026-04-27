@@ -1,0 +1,90 @@
+# ============================================================
+# Dev overrides: single-replica, minimal resources, local DB.
+# Usage: helm install ti ./charts/ti-platform -f values-dev.yaml
+# ============================================================
+
+global:
+  topologySpread:
+    enabled: false
+
+postgresql:
+  enabled: true
+  architecture: standalone
+  primary:
+    persistence: { size: 5Gi }
+    resources:
+      requests: { cpu: "100m", memory: "256Mi" }
+
+redis:
+  enabled: true
+  architecture: standalone
+  sentinel: { enabled: false }
+  master:
+    persistence: { size: 2Gi }
+
+nats:
+  enabled: true
+  config:
+    cluster: { enabled: false, replicas: 1 }
+    jetstream:
+      fileStore: { pvc: { size: 2Gi } }
+
+api:
+  replicaCount: 1
+  autoscaling: { enabled: false }
+  pdb: { minAvailable: 0 }
+
+ingestion:
+  replicaCount: 1
+
+enrichment:
+  replicaCount: 1
+  autoscaling: { enabled: false }
+  pdb: { minAvailable: 0 }
+
+correlation:
+  replicaCount: 1
+
+icap:
+  replicaCount: 1
+  autoscaling: { enabled: false }
+  service: { type: NodePort }
+  pdb: { minAvailable: 0 }
+
+logserver:
+  replicaCount: 1
+  autoscaling: { enabled: false }
+  service: { type: NodePort }
+
+sandbox:
+  replicaCount: 1
+  autoscaling: { enabled: false }
+  storage: { mode: pvc }
+
+frontend:
+  replicaCount: 1
+  autoscaling: { enabled: false }
+  pdb: { minAvailable: 0 }
+
+ingress:
+  hosts:
+    api: { host: api.ti.local, paths: [{ path: /, pathType: Prefix }] }
+    app: { host: app.ti.local, paths: [{ path: /, pathType: Prefix }] }
+  tls: { enabled: false }
+
+monitoring:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+
+secrets:
+  create:
+    enabled: true
+    values:
+      POSTGRES_PASSWORD: "dev-postgres"
+      REDIS_PASSWORD: "dev-redis"
+      NATS_PASSWORD: "dev-nats"
+      SECRET_KEY: "dev-secret-key-CHANGE"
+      API_KEY: "dev-api-key"
+      GRAFANA_PASSWORD: "admin"

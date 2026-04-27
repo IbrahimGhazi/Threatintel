@@ -1,0 +1,166 @@
+{{- if .Values.sandbox.enabled }}
+{{- $svc := "sandbox" }}
+{{- $cfg := .Values.sandbox }}
+{{- $jobsNs := default (printf "%s-sandbox-jobs" .Release.Name) $cfg.jobs.namespace }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  replicas: {{ $cfg.replicaCount }}
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector:
+    matchLabels: {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ti.labels" . | nindent 8 }}
+        {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+      priorityClassName: {{ .Values.priorityClasses.default.name }}
+      terminationGracePeriodSeconds: 120
+      securityContext: {{- include "ti.podSecurityContext" . | nindent 8 }}
+      {{- include "ti.spreadAndAffinity" (dict "ctx" . "svc" $svc) | nindent 6 }}
+      containers:
+        - name: sandbox
+          image: {{ include "ti.image" (dict "ctx" . "cfg" $cfg) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- include "ti.containerSecurityContext" . | nindent 12 }}
+          env:
+            {{- include "ti.commonEnv" . | nindent 12 }}
+            - name: API_URL
+              value: "http://{{ include "ti.svcName" (dict "ctx" . "svc" "api") }}.{{ .Release.Namespace }}.svc.{{ .Values.global.clusterDomain }}:{{ .Values.api.service.port }}"
+            # SANDBOX_ENGINE is emitted below via the `range $cfg.env` loop.
+            - name: SANDBOX_JOB_NAMESPACE
+              value: {{ $jobsNs | quote }}
+            - name: SANDBOX_JOB_SERVICEACCOUNT
+              value: "sandbox-job-runner"
+            - name: SANDBOX_ANALYSIS_IMAGE
+              value: {{ $cfg.jobs.analysisImage | quote }}
+            - name: SANDBOX_ANALYSIS_TIMEOUT
+              value: "{{ $cfg.jobs.analysisTimeoutSeconds }}"
+            - name: SANDBOX_JOB_TTL_SECONDS
+              value: "{{ $cfg.jobs.ttlSecondsAfterFinished }}"
+            {{- if $cfg.jobs.runtimeClassName }}
+            - name: SANDBOX_JOB_RUNTIMECLASS
+              value: {{ $cfg.jobs.runtimeClassName | quote }}
+            {{- end }}
+            {{- if eq $cfg.storage.mode "s3" }}
+            - name: SANDBOX_STORAGE_MODE
+              value: "s3"
+            - name: S3_ENDPOINT
+              value: {{ $cfg.storage.s3.endpoint | quote }}
+            - name: S3_BUCKET
+              value: {{ $cfg.storage.s3.bucket | quote }}
+            - name: S3_REGION
+              value: {{ $cfg.storage.s3.region | quote }}
+            - name: S3_ACCESS_KEY_ID
+              valueFrom: { secretKeyRef: { name: {{ include "ti.secretName" . }}, key: {{ $cfg.storage.s3.accessKeyIdSecretKey }} } }
+            - name: S3_SECRET_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "ti.secretName" . }}, key: {{ $cfg.storage.s3.secretAccessKeySecretKey }} } }
+            {{- else }}
+            - name: SANDBOX_STORAGE_MODE
+              value: "pvc"
+            - name: SANDBOX_FILES_DIR
+              value: "/sandbox-files"
+            {{- end }}
+            - name: VIRUSTOTAL_API_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "ti.secretName" . }}, key: VIRUSTOTAL_API_KEY, optional: true } }
+            {{- range $k, $v := $cfg.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          resources: {{- toYaml $cfg.resources | nindent 12 }}
+          # Sandbox is a NATS subscriber — no HTTP server today.
+          livenessProbe:
+            exec: { command: ["/bin/true"] }
+            initialDelaySeconds: 30
+            periodSeconds: 60
+          readinessProbe:
+            exec: { command: ["/bin/true"] }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            {{- if eq $cfg.storage.mode "pvc" }}
+            - { name: sandbox-files, mountPath: /sandbox-files }
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 256Mi }
+        {{- if eq $cfg.storage.mode "pvc" }}
+        - name: sandbox-files
+          persistentVolumeClaim:
+            claimName: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}-files
+        {{- end }}
+{{- if eq $cfg.storage.mode "pvc" }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}-files
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  # RWX required only when sandbox runs >1 replica reading shared artifacts.
+  # With HPA minReplicas=1 (dev) RWO is sufficient and works on every CSI.
+  accessModes: [{{ default "ReadWriteOnce" $cfg.storage.pvc.accessMode | quote }}]
+  {{- if or $cfg.storage.pvc.storageClass .Values.global.storageClass }}
+  storageClassName: {{ default .Values.global.storageClass $cfg.storage.pvc.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $cfg.storage.pvc.size }}
+{{- end }}
+{{- if $cfg.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  minReplicas: {{ $cfg.autoscaling.minReplicas }}
+  maxReplicas: {{ $cfg.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: {{ $cfg.autoscaling.targetCPUUtilizationPercentage }} }
+{{- end }}
+{{- if and $cfg.autoscaling.enabled $cfg.autoscaling.keda.enabled }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}-keda
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  minReplicaCount: {{ $cfg.autoscaling.minReplicas }}
+  maxReplicaCount: {{ $cfg.autoscaling.maxReplicas }}
+  pollingInterval: 15
+  cooldownPeriod: 300
+  triggers:
+    - type: nats-jetstream
+      metadata:
+        natsServerMonitoringEndpoint: "{{ .Release.Name }}-nats.{{ .Release.Namespace }}.svc.{{ .Values.global.clusterDomain }}:8222"
+        account: "$G"
+        stream: "SANDBOX"
+        consumer: "sandbox-workers"
+        lagThreshold: {{ $cfg.autoscaling.keda.lagThreshold | quote }}
+{{- end }}
+{{- end }}

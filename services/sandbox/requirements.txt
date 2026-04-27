@@ -1,0 +1,17 @@
+nats-py==2.6.0
+redis==5.0.8
+asyncpg==0.30.0
+sqlalchemy[asyncio]==2.0.37
+aiohttp==3.10.10
+aiofiles==24.1.0
+structlog==24.4.0
+python-dotenv==1.0.1
+orjson==3.9.12
+# Local sandbox engine
+pefile==2023.2.7
+docker==7.1.0
+dpkt==1.9.8
+olefile==0.47
+oletools==0.60.2
+cryptography==42.0.5
+

@@ -51,12 +51,15 @@ yarn-error.log*
 .pnpm-debug.log*
 
 # ═══════════════════════════════════════════════════════════════
-# Docker / Kubernetes
+# Docker / Kubernetes / Helm
 # ═══════════════════════════════════════════════════════════════
 *.tar
 docker-compose.override.yml
 infra/k8s/secrets/*.yaml
 !infra/k8s/secrets/*.example.yaml
+# Vendored Helm sub-charts (re-fetched via `helm dep update`)
+deploy/k8s/charts/*/charts/
+*.tgz
 
 # ═══════════════════════════════════════════════════════════════
 # Data / volumes (don't commit firewall logs, postgres dumps, etc.)

@@ -1,0 +1,35 @@
+{{- if .Values.api.enabled }}
+# Grants the ti-api ServiceAccount the minimum read access needed to power
+# the /system/metrics endpoint (used by the frontend "System Overview" page):
+#   - list/get pods in the release namespace  → inventory, phase, containers
+#   - list/get pods.metrics.k8s.io            → CPU/memory usage from
+#                                                metrics-server
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" "api") }}-system-metrics
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" "api") }}-system-metrics
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "ti.svcName" (dict "ctx" . "svc" "api") }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" "api") }}-system-metrics
+{{- end }}

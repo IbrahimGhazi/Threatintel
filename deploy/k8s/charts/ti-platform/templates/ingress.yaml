@@ -1,0 +1,58 @@
+{{- if .Values.ingress.enabled }}
+{{- $apiHost := .Values.ingress.hosts.api.host }}
+{{- $appHost := .Values.ingress.hosts.app.host }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-ingress
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+  annotations:
+    {{- if .Values.ingress.tls.enabled }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer | quote }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts: [{{ $apiHost | quote }}]
+      secretName: {{ .Release.Name }}-api-tls
+    - hosts: [{{ $appHost | quote }}]
+      secretName: {{ .Release.Name }}-app-tls
+  {{- end }}
+  rules:
+    - host: {{ $apiHost | quote }}
+      http:
+        paths:
+          {{- range .Values.ingress.hosts.api.paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "ti.svcName" (dict "ctx" $ "svc" "api") }}
+                port:
+                  number: {{ $.Values.api.service.port }}
+          {{- end }}
+    - host: {{ $appHost | quote }}
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ti.svcName" (dict "ctx" $ "svc" "api") }}
+                port:
+                  number: {{ $.Values.api.service.port }}
+          {{- range .Values.ingress.hosts.app.paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "ti.svcName" (dict "ctx" $ "svc" "frontend") }}
+                port:
+                  number: {{ $.Values.frontend.service.port }}
+          {{- end }}
+{{- end }}

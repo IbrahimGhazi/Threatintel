@@ -1,0 +1,75 @@
+{{- if .Values.ingestion.enabled }}
+{{- $svc := "ingestion" }}
+{{- $cfg := .Values.ingestion }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  replicas: {{ $cfg.replicaCount }}
+  revisionHistoryLimit: 3
+  # Leader-elected singleton — Recreate avoids two leaders during rollout.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ti.labels" . | nindent 8 }}
+        {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+      priorityClassName: {{ .Values.priorityClasses.default.name }}
+      terminationGracePeriodSeconds: 30
+      securityContext: {{- include "ti.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: ingestion
+          image: {{ include "ti.image" (dict "ctx" . "cfg" $cfg) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- include "ti.containerSecurityContext" . | nindent 12 }}
+          env:
+            {{- include "ti.commonEnv" . | nindent 12 }}
+            - name: LEADER_ELECTION_ENABLED
+              value: {{ $cfg.leaderElection.enabled | quote }}
+            - name: LEADER_ELECTION_LEASE
+              value: {{ $cfg.leaderElection.leaseName | quote }}
+            - name: LEADER_ELECTION_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            {{- range $k, $v := $cfg.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            # Feed API keys — all optional.
+            {{- range $k := list "ABUSEIPDB_API_KEY" "OTX_API_KEY" "THREATFOX_API_KEY" "MALWAREBAZAAR_API_KEY" }}
+            - name: {{ $k }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ti.secretName" $ }}
+                  key: {{ $k }}
+                  optional: true
+            {{- end }}
+          resources: {{- toYaml $cfg.resources | nindent 12 }}
+          # Liveness: the Python process itself is PID 1; if it exits kubelet
+          # restarts automatically. `exec true` only verifies the container
+          # has a working shell. Replace with an app-specific /healthz when
+          # the service gains an HTTP endpoint.
+          livenessProbe:
+            exec: { command: ["/bin/true"] }
+            initialDelaySeconds: 30
+            periodSeconds: 60
+          readinessProbe:
+            exec: { command: ["/bin/true"] }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}
