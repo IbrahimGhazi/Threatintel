@@ -34,9 +34,45 @@ from app.engine.ir import (
 
 log = logging.getLogger(__name__)
 
-_DEST_RE = re.compile(r"^\s*destination\s+(?P<addr>[\d\.:a-fA-F]+|\S+):(?P<port>\d+)\s*$")
-_ALT_DEST_RE = re.compile(r"^\s*destination\s+(?P<addr>[\d\.]+):(?P<port>\d+|\*)\s*$")
-_MEMBER_HEAD_RE = re.compile(r"(?m)^\s*(?P<name>[A-Za-z_][\w\-.]*):(?P<port>\d+)\s*\{")
+_DEST_RE = re.compile(
+    r"^\s*destination\s+"
+    r"(?P<addr>[\d\.]+|[a-fA-F\d:]+)"           # IPv4 or IPv6
+    r":(?P<port>\d+|[A-Za-z][\w\-]*|\*)"        # numeric port, service name, or '*'
+    r"\s*$"
+)
+_ALT_DEST_RE = _DEST_RE                          # alias kept for backward compat
+
+# F5 BIG-IP renders well-known ports by IANA service name in `destination`
+# fields. We need a numeric port for the VIP node + EXPOSES edge, so resolve
+# common names here. Anything unknown gets warned + skipped.
+_F5_SERVICE_PORTS = {
+    "*": 0, "any": 0,
+    "http": 80, "https": 443, "ftp": 21, "ftp-data": 20, "ssh": 22,
+    "telnet": 23, "smtp": 25, "domain": 53, "tftp": 69, "http-alt": 8080,
+    "kerberos": 88, "pop3": 110, "rpcbind": 111, "imap": 143, "snmp": 161,
+    "snmptrap": 162, "ldap": 389, "https-alt": 8443, "smtps": 465,
+    "syslog": 514, "rip": 520, "ldaps": 636, "msdp": 639, "imaps": 993,
+    "pop3s": 995, "msft-gc": 3268, "mssql": 1433, "ms-sql-s": 1433,
+    "oracle": 1521, "nfs": 2049, "mysql": 3306, "rdp": 3389, "ms-wbt-server": 3389,
+    "postgres": 5432, "postgresql": 5432, "amqp": 5672, "vnc": 5900,
+    "redis": 6379, "memcache": 11211, "mongo": 27017,
+    # F5-specific aliases occasionally seen
+    "tcp-domain": 53, "tcp-https": 443, "tcp-http": 80,
+}
+
+
+def _resolve_port(token: str) -> Optional[int]:
+    """Return an int port for `token` (numeric, service-name, or '*')."""
+    if not token:
+        return None
+    try:
+        return int(token)
+    except ValueError:
+        return _F5_SERVICE_PORTS.get(token.lower())
+_MEMBER_HEAD_RE = re.compile(
+    r"(?m)^\s*(?P<name>[A-Za-z_][\w\-.]*):"
+    r"(?P<port>\d+|[a-zA-Z][\w\-]*|\*)\s*\{"
+)
 _NODE_ADDR_RE = re.compile(r"^\s*address\s+(?P<addr>[\d\.:a-fA-F]+)\s*$")
 _TRANSLATION_RE = re.compile(r"^\s*translation-address\s+(?P<addr>[\d\.:a-fA-F]+)\s*$")
 _ORIGINATING_RE = re.compile(r"^\s*originating-address\s+(?P<addr>[\d\.:a-fA-F]+)\s*$")
@@ -230,7 +266,15 @@ def _parse_pool(header: str, body: str, line_no: int, device_id: str,
 
         for m, inner in _scan_inner(members_body, _MEMBER_HEAD_RE):
             mname = m.group("name")
-            mport = int(m.group("port"))
+            mport_resolved = _resolve_port(m.group("port"))
+            if mport_resolved is None:
+                cfg.warnings.append(ParseWarning(
+                    file=file, line=line_no,
+                    message=(f"pool '{name}' member '{mname}' has unknown "
+                             f"service '{m.group('port')}' — skipping"),
+                ))
+                continue
+            mport = mport_resolved
             # Resolve node-ref to IP if necessary
             address = node_addr.get(mname, mname)
             state = "unknown"
@@ -263,14 +307,13 @@ def _parse_virtual(header: str, body: str, line_no: int, device_id: str,
     proto = "tcp"
     pool_name: Optional[str] = None
 
+    raw_port: Optional[str] = None
     for line in body.splitlines():
-        m = _DEST_RE.match(line) or _ALT_DEST_RE.match(line)
+        m = _DEST_RE.match(line)
         if m:
             address = m.group("addr")
-            try:
-                port = int(m.group("port"))
-            except ValueError:
-                port = 0
+            raw_port = m.group("port")
+            port = _resolve_port(raw_port)
             continue
         m2 = _PROTO_RE.match(line)
         if m2:
@@ -281,10 +324,17 @@ def _parse_virtual(header: str, body: str, line_no: int, device_id: str,
             pool_name = m3.group("pool")
             continue
 
-    if not address or port is None:
+    if not address:
         cfg.warnings.append(ParseWarning(
             file=file, line=line_no,
-            message=f"virtual '{name}' missing destination address/port",
+            message=f"virtual '{name}' missing destination address",
+        ))
+        return
+    if port is None:
+        cfg.warnings.append(ParseWarning(
+            file=file, line=line_no,
+            message=(f"virtual '{name}' has unrecognised service '{raw_port}' — "
+                     f"add to _F5_SERVICE_PORTS in parsers/f5.py"),
         ))
         return
     cfg.vips.append(VIP(
