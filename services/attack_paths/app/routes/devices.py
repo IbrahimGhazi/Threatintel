@@ -28,6 +28,7 @@ from app.devices.crypto import (
     encryption_available, safe_credential_summary,
 )
 from app.devices.poll import poll_device
+from app.devices.scheduler import trigger_analysis_run
 
 log = logging.getLogger(__name__)
 
@@ -166,10 +167,24 @@ async def create_device(payload: DeviceIn) -> DeviceOut:
 
     # Fire an immediate poll so the operator sees status feedback right away.
     # Errors are recorded on the device row; we surface them in the response.
+    poll_result = None
     try:
-        await poll_device(new_id, reason="initial-after-register")
+        poll_result = await poll_device(new_id, reason="initial-after-register")
     except Exception:                                           # noqa: BLE001
         log.exception("initial poll for %s failed", new_id)
+
+    # If we got a fresh config back, kick off the analysis run inline so the
+    # user doesn't have to wait for the next scheduler tick (which wouldn't
+    # re-poll this device for another `poll_interval_seconds` anyway).
+    if poll_result and poll_result.get("changed") and poll_result.get("upload_id"):
+        try:
+            await trigger_analysis_run(
+                [uuid.UUID(poll_result["upload_id"])],
+                reason=f"register:{payload.vendor}",
+            )
+        except Exception:                                       # noqa: BLE001
+            log.exception("triggering run after register failed (orphan sweep "
+                          "will pick it up on next tick)")
 
     return await _get_one_or_404(new_id)
 
@@ -237,9 +252,22 @@ async def delete_device(device_id: uuid.UUID):
 @router.post("/{device_id}/fetch")
 async def fetch_now(device_id: uuid.UUID) -> Dict[str, Any]:
     try:
-        return await poll_device(device_id, reason="manual")
+        res = await poll_device(device_id, reason="manual")
     except ValueError as exc:
         raise HTTPException(404, detail=str(exc)) from exc
+
+    if res.get("changed") and res.get("upload_id"):
+        try:
+            run_id = await trigger_analysis_run(
+                [uuid.UUID(res["upload_id"])],
+                reason=f"manual-fetch:{device_id}",
+            )
+            if run_id is not None:
+                res["run_id"] = str(run_id)
+        except Exception:                                       # noqa: BLE001
+            log.exception("triggering run after fetch_now failed "
+                          "(orphan sweep will retry next tick)")
+    return res
 
 
 # ── Internal helpers ─────────────────────────────────────────────────────────

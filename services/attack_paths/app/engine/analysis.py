@@ -53,16 +53,17 @@ LIMIT $hard_limit
 """
 
 # Fan-out: nodes with high outbound branching but few Internet ingresses.
+# Cypher 5 doesn't allow `c.n` (map-property) as a node pattern, so we keep
+# `n` as a single binding throughout instead of round-tripping through a
+# collected map.
 _Q_FANOUT = """
 MATCH (n)-[r]->(t:Host)
 WHERE NOT n:Internet
 WITH n, count(DISTINCT t) AS outdeg
 WHERE outdeg >= $out_min
-WITH collect({n: n, outdeg: outdeg}) AS cand
-UNWIND cand AS c
 MATCH (i:Internet {id: 'internet'})
-OPTIONAL MATCH p = shortestPath((i)-[*..6]->(c.n))
-WITH c.n AS n, c.outdeg AS outdeg, count(p) AS ingress_paths
+OPTIONAL MATCH p = shortestPath((i)-[*..6]->(n))
+WITH n, outdeg, count(p) AS ingress_paths
 WHERE ingress_paths <= $in_max
 RETURN labels(n)[0] AS kind,
        properties(n) AS props,

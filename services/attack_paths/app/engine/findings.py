@@ -79,7 +79,7 @@ INSERT INTO attack_path_findings (
     path_json, score_breakdown, rules_cited,
     first_seen_run_id, last_seen_run_id, first_seen_at, last_seen_at
 ) VALUES (
-    :id, :fingerprint, 'path', :severity::severity_level, :score, 'open',
+    :id, :fingerprint, 'path', CAST(:severity AS severity_level), :score, 'open',
     :asset_ip, :asset_hostname, :asset_criticality, :ingress, :hops,
     CAST(:path_json AS jsonb), CAST(:score_breakdown AS jsonb), CAST(:rules_cited AS jsonb),
     :run_id, :run_id, NOW(), NOW()
@@ -105,7 +105,7 @@ INSERT INTO attack_path_findings (
     ingress, fanout_json, score_breakdown,
     first_seen_run_id, last_seen_run_id, first_seen_at, last_seen_at
 ) VALUES (
-    :id, :fingerprint, 'fanout', :severity::severity_level, :score, 'open',
+    :id, :fingerprint, 'fanout', CAST(:severity AS severity_level), :score, 'open',
     :ingress, CAST(:fanout_json AS jsonb), CAST(:score_breakdown AS jsonb),
     :run_id, :run_id, NOW(), NOW()
 )
