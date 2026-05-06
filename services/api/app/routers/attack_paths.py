@@ -239,9 +239,10 @@ async def list_findings(
     if kind:
         where.append("kind = :kind"); params["kind"] = kind
     if severity:
-        where.append("severity = :sev::severity_level"); params["sev"] = severity
+        where.append("severity = CAST(:sev AS severity_level)"); params["sev"] = severity
     if status_filter:
-        where.append("status = :st::attack_path_finding_status"); params["st"] = status_filter
+        where.append("status = CAST(:st AS attack_path_finding_status)")
+        params["st"] = status_filter
     sql = _FINDINGS_BASE_SQL
     if where:
         sql += " WHERE " + " AND ".join(where)
@@ -352,7 +353,7 @@ async def upsert_asset(ip: str, payload: AssetIn,
         raise HTTPException(400, detail="criticality must be crown_jewel|high|medium|low")
     row = (await db.execute(sa.text("""
         INSERT INTO attack_path_assets (ip, hostname, criticality, business_unit, notes)
-        VALUES (:ip::inet, :host, :crit, :bu, :notes)
+        VALUES (CAST(:ip AS inet), :host, :crit, :bu, :notes)
         ON CONFLICT (ip) DO UPDATE SET
             hostname      = EXCLUDED.hostname,
             criticality   = EXCLUDED.criticality,

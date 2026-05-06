@@ -189,7 +189,7 @@ async def _set_status(db, device_id: uuid.UUID, status: str,
         await db.execute(sa.text("""
             UPDATE topology_devices SET
                 last_polled_at = NOW(),
-                last_status    = :s::topology_device_status,
+                last_status    = CAST(:s AS topology_device_status),
                 last_error     = :e
             WHERE id = :id
         """), {"s": status, "e": err, "id": str(device_id)})
@@ -197,7 +197,7 @@ async def _set_status(db, device_id: uuid.UUID, status: str,
         await db.execute(sa.text("""
             UPDATE topology_devices SET
                 last_polled_at = NOW(),
-                last_status    = :s::topology_device_status,
+                last_status    = CAST(:s AS topology_device_status),
                 last_error     = :e,
                 is_edge        = :edge
             WHERE id = :id
