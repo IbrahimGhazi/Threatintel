@@ -1,0 +1,107 @@
+{{- if .Values.attackPaths.enabled }}
+{{- $svc := "attack-paths" }}
+{{- $cfg := .Values.attackPaths }}
+# =============================================================================
+# attack-paths — config-driven Attack Path & Fan-Out Analysis Engine.
+#
+# Parses Palo Alto + F5 device configs, builds a graph in Neo4j, and writes
+# curated findings to Postgres. Singleton today (analysis runs are
+# triggered by API + executed in-process); horizontally scalable later
+# via NATS-fanned-out workers.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ti.labels" . | nindent 4 }}
+    {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 4 }}
+spec:
+  type: {{ $cfg.service.type }}
+  ports:
+    - { name: http, port: {{ $cfg.service.port }}, targetPort: {{ $cfg.service.port }}, protocol: TCP }
+  selector:
+    {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  replicas: {{ $cfg.replicaCount }}
+  revisionHistoryLimit: 3
+  # Singleton — uploaded configs land on a per-pod PVC. Recreate keeps
+  # the volume binding stable across rolls.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ti.labels" . | nindent 8 }}
+        {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+      priorityClassName: {{ .Values.priorityClasses.default.name }}
+      terminationGracePeriodSeconds: 30
+      securityContext: {{- include "ti.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: attack-paths
+          image: {{ include "ti.image" (dict "ctx" . "cfg" $cfg) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- include "ti.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - { name: http, containerPort: {{ $cfg.service.port }}, protocol: TCP }
+          env:
+            {{- include "ti.commonEnv" . | nindent 12 }}
+            {{- include "ti.neo4jEnv" . | nindent 12 }}
+            - name: ATTACK_PATHS_CONFIG_DIR
+              value: {{ $cfg.storage.mountPath | quote }}
+            - name: PORT
+              value: "{{ $cfg.service.port }}"
+            {{- range $k, $v := $cfg.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          resources: {{- toYaml $cfg.resources | nindent 12 }}
+          livenessProbe:
+            httpGet: { path: {{ $cfg.probes.livenessPath }}, port: http }
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: {{ $cfg.probes.readinessPath }}, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - { name: configs, mountPath: {{ $cfg.storage.mountPath }} }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: configs
+          persistentVolumeClaim:
+            claimName: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}-configs
+        - name: tmp
+          emptyDir: { sizeLimit: 256Mi }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}-configs
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.global.storageClass }}
+  storageClassName: {{ .Values.global.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $cfg.storage.size | quote }}
+{{- end }}

@@ -1,0 +1,107 @@
+<?xml version="1.0"?>
+<config>
+  <devices>
+    <entry name="localhost.localdomain">
+      <deviceconfig>
+        <system>
+          <hostname>pa-edge-01</hostname>
+        </system>
+      </deviceconfig>
+      <vsys>
+        <entry name="vsys1">
+          <zone>
+            <entry name="untrust">
+              <network><layer3><member>ethernet1/1</member></layer3></network>
+            </entry>
+            <entry name="dmz">
+              <network><layer3><member>ethernet1/2</member></layer3></network>
+            </entry>
+            <entry name="inside">
+              <network><layer3><member>ethernet1/3</member></layer3></network>
+            </entry>
+          </zone>
+          <address>
+            <entry name="web-srv">
+              <ip-netmask>10.20.30.40/32</ip-netmask>
+            </entry>
+            <entry name="dmz-net">
+              <ip-netmask>10.20.30.0/24</ip-netmask>
+            </entry>
+            <entry name="db-srv">
+              <ip-netmask>10.50.60.10</ip-netmask>
+            </entry>
+          </address>
+          <address-group>
+            <entry name="all-servers">
+              <static>
+                <member>web-srv</member>
+                <member>db-srv</member>
+              </static>
+            </entry>
+          </address-group>
+          <service>
+            <entry name="https">
+              <protocol><tcp><port>443</port></tcp></protocol>
+            </entry>
+            <entry name="http">
+              <protocol><tcp><port>80</port></tcp></protocol>
+            </entry>
+          </service>
+          <service-group>
+            <entry name="web-services">
+              <members>
+                <member>http</member>
+                <member>https</member>
+              </members>
+            </entry>
+          </service-group>
+          <rulebase>
+            <security>
+              <rules>
+                <entry name="allow-web-in">
+                  <from><member>untrust</member></from>
+                  <to><member>dmz</member></to>
+                  <source><member>any</member></source>
+                  <destination><member>web-srv</member></destination>
+                  <service><member>web-services</member></service>
+                  <action>allow</action>
+                </entry>
+                <entry name="allow-dmz-to-inside">
+                  <from><member>dmz</member></from>
+                  <to><member>inside</member></to>
+                  <source><member>any</member></source>
+                  <destination><member>db-srv</member></destination>
+                  <service><member>https</member></service>
+                  <action>allow</action>
+                </entry>
+                <entry name="deny-all">
+                  <from><member>any</member></from>
+                  <to><member>any</member></to>
+                  <source><member>any</member></source>
+                  <destination><member>any</member></destination>
+                  <service><member>any</member></service>
+                  <action>deny</action>
+                </entry>
+              </rules>
+            </security>
+            <nat>
+              <rules>
+                <entry name="dnat-web">
+                  <from><member>untrust</member></from>
+                  <to><member>untrust</member></to>
+                  <source><member>any</member></source>
+                  <destination><member>203.0.113.10</member></destination>
+                  <service>any</service>
+                  <destination-translation>
+                    <translated-address>10.20.30.40</translated-address>
+                    <translated-port>443</translated-port>
+                  </destination-translation>
+                </entry>
+              </rules>
+            </nat>
+          </rulebase>
+        </entry>
+      </vsys>
+    </entry>
+  </devices>
+</config>

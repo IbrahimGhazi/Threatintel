@@ -50,6 +50,12 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
+            # attack-paths internal URL — used by /attack-paths router to
+            # trigger analysis runs and proxy graph queries.
+            {{- if .Values.attackPaths.enabled }}
+            - name: ATTACK_PATHS_URL
+              value: "http://{{ include "ti.svcName" (dict "ctx" . "svc" "attack-paths") }}.{{ .Release.Namespace }}.svc.{{ .Values.global.clusterDomain }}:{{ .Values.attackPaths.service.port }}"
+            {{- end }}
             # Third-party API keys — optional, pulled from same secret.
             - name: ABUSEIPDB_API_KEY
               valueFrom: { secretKeyRef: { name: {{ include "ti.secretName" . }}, key: ABUSEIPDB_API_KEY, optional: true } }

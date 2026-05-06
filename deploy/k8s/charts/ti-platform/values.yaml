@@ -122,6 +122,30 @@ redis:
     enabled: true
     quorum: 2
 
+# Neo4j — graph store for the Attack Path & Fan-Out Analysis Engine.
+# Single-node Community edition; the graph is rebuildable from
+# topology_runs.ir_snapshot in Postgres so this is treated as a cache.
+neo4j:
+  enabled: true
+  database: "neo4j"
+  image:
+    repository: neo4j
+    tag: "5.20-community"
+    pullPolicy: IfNotPresent
+  heap:
+    initial: "512m"
+    max: "2g"
+  pagecache: "1g"
+  persistence:
+    size: 20Gi
+  resources:
+    requests: { cpu: "500m", memory: "1Gi" }
+    limits:   { cpu: "2",    memory: "4Gi" }
+
+externalNeo4j:
+  uri: "bolt://neo4j:7687"
+  # Password comes from the shared secret (NEO4J_AUTH = "neo4j/<password>").
+
 # NATS JetStream — 3-node cluster for HA.
 nats:
   enabled: true
@@ -350,6 +374,31 @@ sandbox:
     LOG_LEVEL: INFO
     SANDBOX_ENGINE: k8s-jobs
     LOCAL_SANDBOX_DYNAMIC: "true"
+
+attackPaths:
+  enabled: true
+  image:
+    repository: ti-platform/attack-paths
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 8100
+  resources:
+    requests: { cpu: "200m", memory: "384Mi" }
+    limits:   { cpu: "1",    memory: "1Gi"   }
+  storage:
+    # PVC for uploaded device configs. Size depends on enterprise scale.
+    # Configs are also sha256-deduped so re-uploads are cheap.
+    size: 5Gi
+    mountPath: /var/lib/ti/configs
+  env:
+    LOG_LEVEL: INFO
+    # Per-run analysis budget (seconds). 0 = unlimited.
+    ATTACK_PATHS_RUN_TIMEOUT: "600"
+  probes:
+    livenessPath: /health
+    readinessPath: /health
+    port: 8100
 
 frontend:
   enabled: true

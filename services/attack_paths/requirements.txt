@@ -1,0 +1,16 @@
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.6.0
+pydantic-settings==2.1.0
+sqlalchemy[asyncio]==2.0.25
+asyncpg==0.29.0
+neo4j==5.18.0
+httpx==0.26.0
+python-multipart==0.0.6
+aiofiles==24.1.0
+prometheus-client==0.19.0
+structlog==24.1.0
+orjson==3.9.12
+anyio==4.2.0
+# PAN-OS XML parser uses the stdlib (xml.etree). F5 bigip.conf is line-oriented
+# so no extra parser library is required.

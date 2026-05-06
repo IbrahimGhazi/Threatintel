@@ -1,0 +1,122 @@
+{{- if .Values.neo4j.enabled }}
+{{- $svc := "neo4j" }}
+{{- $cfg := .Values.neo4j }}
+# =============================================================================
+# Neo4j — graph store for the Attack Path & Fan-Out Analysis Engine.
+#
+# Single-replica community edition is sufficient: the graph is rebuildable
+# from `topology_runs.ir_snapshot` in Postgres, so this is treated as a
+# reconstructible cache, not a system-of-record. For HA, switch to the
+# official neo4j-operator and AURA-grade clustering.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ti.labels" . | nindent 4 }}
+    {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - { name: bolt, port: 7687, targetPort: 7687, protocol: TCP }
+    - { name: http, port: 7474, targetPort: 7474, protocol: TCP }
+  selector:
+    {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "ti.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "ti.svcName" (dict "ctx" . "svc" $svc) }}
+  replicas: 1
+  selector:
+    matchLabels: {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ti.labels" . | nindent 8 }}
+        {{- include "ti.selectorLabels" (dict "ctx" . "svc" $svc) | nindent 8 }}
+    spec:
+      priorityClassName: {{ .Values.priorityClasses.high.name }}
+      securityContext:
+        runAsNonRoot: true
+        # Neo4j image runs as uid/gid 7474 by default.
+        runAsUser:  7474
+        runAsGroup: 7474
+        fsGroup:    7474
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: neo4j
+          image: "{{ $cfg.image.repository }}:{{ $cfg.image.tag }}"
+          imagePullPolicy: {{ $cfg.image.pullPolicy | default "IfNotPresent" }}
+          ports:
+            - { name: bolt, containerPort: 7687 }
+            - { name: http, containerPort: 7474 }
+          env:
+            - name: NEO4J_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ti.secretName" . }}
+                  key: NEO4J_AUTH
+            - name: NEO4J_PLUGINS
+              # APOC is required for apoc.path.* used by the analysis engine.
+              value: '["apoc"]'
+            - name: NEO4J_dbms_security_procedures_unrestricted
+              value: "apoc.*"
+            - name: NEO4J_dbms_security_procedures_allowlist
+              value: "apoc.*"
+            - name: NEO4J_server_memory_heap_initial__size
+              value: {{ $cfg.heap.initial | quote }}
+            - name: NEO4J_server_memory_heap_max__size
+              value: {{ $cfg.heap.max | quote }}
+            - name: NEO4J_server_memory_pagecache_size
+              value: {{ $cfg.pagecache | quote }}
+            # Bind to all interfaces (cluster-internal Service handles isolation).
+            - name: NEO4J_server_default__listen__address
+              value: "0.0.0.0"
+          resources: {{- toYaml $cfg.resources | nindent 12 }}
+          # Neo4j /db/manage/server/core/available is too heavy for liveness.
+          # Use the Bolt TCP socket; readiness is HTTP /db/system.
+          startupProbe:
+            tcpSocket: { port: bolt }
+            periodSeconds: 5
+            failureThreshold: 60   # up to 5 minutes for cold start with APOC download
+          livenessProbe:
+            tcpSocket: { port: bolt }
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 5
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: logs, mountPath: /logs }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.global.storageClass }}
+        storageClassName: {{ .Values.global.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $cfg.persistence.size | quote }}
+    - metadata:
+        name: logs
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.global.storageClass }}
+        storageClassName: {{ .Values.global.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: "5Gi"
+{{- end }}

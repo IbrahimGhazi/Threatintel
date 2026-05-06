@@ -107,6 +107,12 @@ try:
 except ImportError:
     _has_api_keys = False
 
+try:
+    from app.routers import attack_paths
+    _has_attack_paths = True
+except ImportError:
+    _has_attack_paths = False
+
 
 log = logging.getLogger("ti.api")
 
@@ -344,6 +350,7 @@ def create_app() -> FastAPI:
     if _has_incidents:       app.include_router(incidents.router)
     if _has_metrics:         app.include_router(metrics.router)
     if _has_url_intel:       app.include_router(url_intel.router)
+    if _has_attack_paths:    app.include_router(attack_paths.router)
 
     # ── Health check ──────────────────────────────────────────────────────────
     @app.get("/health", include_in_schema=False)

@@ -21,7 +21,7 @@ function buildHeaders(extra?: Record<string, string>): Record<string, string> {
   };
 }
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: buildHeaders(init?.headers as Record<string, string>),
@@ -1203,4 +1203,113 @@ export async function getUrlIntelRecent(params: {
   if (params.offset !== undefined) q.set("offset", String(params.offset));
   if (params.limit !== undefined) q.set("limit", String(params.limit));
   return apiFetch<UrlIntelRecentPage>(`/url-intel/recent?${q.toString()}`);
+}
+
+// ── Attack Paths & Fan-Out Analysis ──────────────────────────────────────────
+
+export type AttackPathFindingKind   = "path" | "fanout";
+export type AttackPathFindingStatus = "open" | "acknowledged" | "suppressed";
+
+export interface AttackPathFindingSummary {
+  id: string;
+  kind: AttackPathFindingKind;
+  severity: Severity;
+  score: number;
+  status: AttackPathFindingStatus;
+  asset_ip?: string;
+  asset_hostname?: string;
+  asset_criticality?: string;
+  ingress: string;
+  hops?: number;
+  fingerprint: string;
+  last_seen_at: string;
+}
+
+export interface AttackPathFindingDetail extends AttackPathFindingSummary {
+  path_json?: Record<string, unknown>;
+  fanout_json?: Record<string, unknown>;
+  rules_cited?: Array<Record<string, unknown>>;
+  score_breakdown?: Record<string, number>;
+  notes?: string;
+}
+
+export interface AttackPathRunSummary {
+  id: string;
+  status: string;
+  started_at: string;
+  finished_at?: string;
+  duration_ms?: number;
+  device_count: number;
+  findings_count: number;
+  error_message?: string;
+}
+
+export async function listAttackPathFindings(params: {
+  kind?: AttackPathFindingKind;
+  severity?: Severity;
+  status?: AttackPathFindingStatus;
+  limit?: number;
+} = {}): Promise<AttackPathFindingSummary[]> {
+  const q = new URLSearchParams();
+  if (params.kind)     q.set("kind",     params.kind);
+  if (params.severity) q.set("severity", params.severity);
+  if (params.status)   q.set("status",   params.status);
+  if (params.limit)    q.set("limit",    String(params.limit));
+  const qs = q.toString();
+  return apiFetch<AttackPathFindingSummary[]>(
+    `/attack-paths/findings${qs ? `?${qs}` : ""}`,
+  );
+}
+
+export async function getAttackPathFinding(id: string): Promise<AttackPathFindingDetail> {
+  return apiFetch<AttackPathFindingDetail>(`/attack-paths/findings/${id}`);
+}
+
+export async function ackAttackPathFinding(id: string, actor: string,
+                                           notes?: string): Promise<AttackPathFindingSummary> {
+  return apiFetch<AttackPathFindingSummary>(`/attack-paths/findings/${id}/ack`, {
+    method: "POST",
+    body: JSON.stringify({ actor, notes }),
+  });
+}
+
+export async function suppressAttackPathFinding(id: string, actor: string,
+                                                reason?: string): Promise<AttackPathFindingSummary> {
+  return apiFetch<AttackPathFindingSummary>(`/attack-paths/findings/${id}/suppress`, {
+    method: "POST",
+    body: JSON.stringify({ actor, reason }),
+  });
+}
+
+export async function listAttackPathRuns(limit = 25): Promise<AttackPathRunSummary[]> {
+  return apiFetch<AttackPathRunSummary[]>(`/attack-paths/runs?limit=${limit}`);
+}
+
+export async function uploadAttackPathConfig(
+  file: File, vendor: "panos" | "f5" | "fortinet" | "unknown",
+  hostname?: string,
+): Promise<{ id: string; vendor: string; sha256: string; size_bytes: number }> {
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("vendor", vendor);
+  if (hostname) fd.append("hostname", hostname);
+  // FormData uploads must NOT carry a Content-Type header (browser sets it
+  // with the multipart boundary). Bypass apiFetch which forces JSON.
+  const res = await fetch(`${API_BASE}/attack-paths/configs`, {
+    method: "POST",
+    headers: { "X-API-Key": API_KEY },
+    body: fd,
+  });
+  if (!res.ok) {
+    throw new Error(`upload failed: ${res.status} ${await res.text()}`);
+  }
+  return res.json();
+}
+
+export async function triggerAttackPathRun(uploadIds: string[],
+                                           triggeredBy?: string): Promise<{ run_id: string; status: string }> {
+  return apiFetch<{ run_id: string; status: string }>(`/attack-paths/runs`, {
+    method: "POST",
+    body: JSON.stringify({ upload_ids: uploadIds, triggered_by: triggeredBy }),
+  });
 }

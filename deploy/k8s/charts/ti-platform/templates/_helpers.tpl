@@ -91,6 +91,28 @@ app.kubernetes.io/component: {{ .svc }}
 {{- end -}}
 {{- end -}}
 
+{{/* Neo4j Bolt URI used by api + attack-paths services. */}}
+{{- define "ti.neo4jUri" -}}
+{{- if .Values.neo4j.enabled -}}
+{{- printf "bolt://%s-neo4j.%s.svc.%s:7687" .Release.Name .Release.Namespace .Values.global.clusterDomain -}}
+{{- else -}}
+{{- .Values.externalNeo4j.uri | default "bolt://neo4j:7687" -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Env block for services that need Neo4j (api, attack-paths). */}}
+{{- define "ti.neo4jEnv" -}}
+- name: NEO4J_URI
+  value: {{ include "ti.neo4jUri" . | quote }}
+- name: NEO4J_AUTH
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "ti.secretName" . }}
+      key: NEO4J_AUTH
+- name: NEO4J_DATABASE
+  value: {{ .Values.neo4j.database | default "neo4j" | quote }}
+{{- end -}}
+
 {{/*
   Common pod securityContext.
 */}}
