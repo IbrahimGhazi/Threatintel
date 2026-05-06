@@ -63,6 +63,13 @@ spec:
               value: {{ $cfg.storage.mountPath | quote }}
             - name: PORT
               value: "{{ $cfg.service.port }}"
+            # Required for credential encryption (device registry, M5 phase 5).
+            - name: MASTER_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ti.secretName" . }}
+                  key: MASTER_ENCRYPTION_KEY
+                  optional: true
             {{- range $k, $v := $cfg.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}

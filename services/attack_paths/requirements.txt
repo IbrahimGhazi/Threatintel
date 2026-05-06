@@ -12,5 +12,6 @@ prometheus-client==0.19.0
 structlog==24.1.0
 orjson==3.9.12
 anyio==4.2.0
+cryptography==42.0.5
 # PAN-OS XML parser uses the stdlib (xml.etree). F5 bigip.conf is line-oriented
 # so no extra parser library is required.

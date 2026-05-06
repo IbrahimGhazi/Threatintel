@@ -108,6 +108,12 @@ except ImportError:
     _has_api_keys = False
 
 try:
+    from app.routers import firewall_audit
+    _has_firewall_audit = True
+except ImportError:
+    _has_firewall_audit = False
+
+try:
     from app.routers import attack_paths
     _has_attack_paths = True
 except ImportError:
@@ -116,18 +122,51 @@ except ImportError:
 
 log = logging.getLogger("ti.api")
 
+# ── Wire ti.api INFO logs into kubectl-visible stdout ─────────────────────
+# Discovered 2026-05-04 (roadmap follow-up #5): uvicorn configures only
+# `uvicorn` / `uvicorn.access` loggers; the `ti.api` namespace inherits
+# root's default WARNING level and has no handler.  Result: every
+# logger.info() call in app code (scheduler "daily orchestrator: csaf_ok…",
+# migration "vendor-audit rule library: parsed=…", warmer "url_intel
+# warmer started", etc.) was silently filtered before reaching kubectl
+# logs.  Surgical fix: explicit StreamHandler at INFO on `ti.api` only,
+# leaves all other namespaces alone (avoids sqlalchemy / httpx noise).
+if not any(getattr(h, "_ti_api_marker", False) for h in log.handlers):
+    _ti_handler = logging.StreamHandler()
+    _ti_handler._ti_api_marker = True   # idempotency for hot-reload
+    _ti_handler.setFormatter(logging.Formatter(
+        "%(asctime)s ti.api %(levelname)-7s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S%z",
+    ))
+    log.addHandler(_ti_handler)
+    log.setLevel(logging.INFO)
+    log.propagate = False   # don't double-print via root
+
 
 # ── Log retention cleanup ──────────────────────────────────────────────────────
 
 async def _retention_cleanup_loop() -> None:
-    """
-    Background task: purge log_entries older than the configured retention period.
-    Runs once on startup, then every 24 hours.
+    """Background task: purge log_entries older than the configured
+    retention period.
+
+    2026-05-04 — runs at customer-local ``PLATFORM_RETENTION_HOUR``
+    (default 14:00) instead of "any time" so the load lands while
+    operators are present.
     """
     from app.database import AsyncSessionLocal
+    from app.services.vendor_audit import business_hours
+
+    hr = business_hours.retention_hour()
 
     while True:
         try:
+            wait = business_hours.seconds_until(hr)
+            log.info(
+                "retention cleanup: next run %s (sleeping %.0fs)",
+                business_hours.describe_next_run(hr), wait,
+            )
+            await asyncio.sleep(wait)
+
             from sqlalchemy import text
             async with AsyncSessionLocal() as db:
                 # Read retention setting (default 30 days)
@@ -147,10 +186,12 @@ async def _retention_cleanup_loop() -> None:
                 purged = result.rowcount
                 if purged:
                     log.info("Retention cleanup: purged %d log entries older than %d days", purged, retention_days)
+        except asyncio.CancelledError:
+            break
         except Exception as exc:
             log.warning("Retention cleanup failed: %s", exc)
-
-        await asyncio.sleep(86400)  # sleep 24 hours
+            # On error, wait an hour and retry — don't tight-loop
+            await asyncio.sleep(3600)
 
 
 
@@ -259,6 +300,12 @@ async def lifespan(app: FastAPI):
     try:
         await _url_reputation_ground_truth_migration()
         await _url_content_analysis_migration()
+        # Vendor-config audit feature (PA CVE matcher) — 2026-05-04
+        from app.services.vendor_audit.migration import run_migration as _vendor_audit_migration
+        await _vendor_audit_migration()
+        # Sync curated YAML rules into vendor_advisories (idempotent upsert)
+        from app.services.vendor_audit.rule_loader import sync_rule_library
+        await sync_rule_library()
     except Exception as exc:
         log.warning("startup migration error: %s", exc)
 
@@ -289,6 +336,36 @@ async def lifespan(app: FastAPI):
     # Start log retention cleanup loop
     retention_task = asyncio.create_task(_retention_cleanup_loop())
 
+    # Start /url-intel/stats + /url-intel/indicator-tags warmer (2026-05-04).
+    # Refreshes the response cache every ~50s so user requests always hit
+    # warm cache. Without this, every cold load paid ~5s while Postgres
+    # ran the 7-query rollup at ~93% CPU. Warmer shifts the spike off the
+    # user-facing path. Optional — the api works fine without it (cache
+    # just expires and individual users pay cold cost).
+    warmer_task = None
+    if _has_url_intel:
+        try:
+            warmer_task = url_intel.start_warmer()
+            log.info("url_intel warmer started")
+        except Exception as exc:
+            log.warning("url_intel warmer failed to start (continuing): %s", exc)
+
+    # Vendor-audit daily orchestrator (2026-05-04, day 4). Replaces the
+    # standalone CSAF loop. Once a day at customer-local PLATFORM_DAILY_HOUR:
+    #   1. CSAF ingest (refresh advisory catalog)
+    #   2. Per-device firewall sync (PA running-config pull, redact, persist)
+    #   3. Re-evaluate all latest configs against advisory catalog
+    #   4. Bridge new 'applies' findings → /alerts table
+    # Manual on-demand trigger: POST /firewall/sync-all
+    audit_task = None
+    if _has_firewall_audit:
+        try:
+            from app.services.vendor_audit.scheduler import start_daily_orchestrator
+            audit_task = start_daily_orchestrator()
+            log.info("vendor_audit daily orchestrator started")
+        except Exception as exc:
+            log.warning("vendor_audit orchestrator failed to start (continuing): %s", exc)
+
     yield
 
     # Cleanup
@@ -297,6 +374,20 @@ async def lifespan(app: FastAPI):
         await retention_task
     except asyncio.CancelledError:
         pass
+
+    if warmer_task is not None:
+        warmer_task.cancel()
+        try:
+            await warmer_task
+        except asyncio.CancelledError:
+            pass
+
+    if audit_task is not None:
+        audit_task.cancel()
+        try:
+            await audit_task
+        except asyncio.CancelledError:
+            pass
 
     if subscriber_task:
         subscriber_task.cancel()
@@ -350,6 +441,7 @@ def create_app() -> FastAPI:
     if _has_incidents:       app.include_router(incidents.router)
     if _has_metrics:         app.include_router(metrics.router)
     if _has_url_intel:       app.include_router(url_intel.router)
+    if _has_firewall_audit:  app.include_router(firewall_audit.router)
     if _has_attack_paths:    app.include_router(attack_paths.router)
 
     # ── Health check ──────────────────────────────────────────────────────────

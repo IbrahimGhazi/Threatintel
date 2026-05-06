@@ -13,9 +13,11 @@ import {
   Check,
   X,
   List as ListIcon,
+  Server,
 } from "lucide-react";
 import { GraphView } from "@/components/attack-paths/GraphView";
 import { AssetsPanel } from "@/components/attack-paths/AssetsPanel";
+import { DevicesPanel } from "@/components/attack-paths/DevicesPanel";
 import { formatDistanceToNow, parseISO } from "date-fns";
 import clsx from "clsx";
 
@@ -58,7 +60,7 @@ const SEVERITY_RANK: Record<Severity, number> = {
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
-type ViewMode = "list" | "graph" | "assets";
+type ViewMode = "list" | "graph" | "assets" | "devices";
 
 export default function AttackPathsPage() {
   const [view, setView] = useState<ViewMode>("list");
@@ -205,6 +207,10 @@ export default function AttackPathsPage() {
       {view === "assets" && (
         <AssetsPanel />
       )}
+
+      {view === "devices" && (
+        <DevicesPanel />
+      )}
     </div>
   );
 }
@@ -213,9 +219,10 @@ function ViewToggle({ current, onChange }: {
   current: ViewMode; onChange: (v: ViewMode) => void;
 }) {
   const opts: Array<{ id: ViewMode; label: string; icon: React.ElementType }> = [
-    { id: "list",   label: "List",   icon: ListIcon },
-    { id: "graph",  label: "Graph",  icon: Network },
-    { id: "assets", label: "Assets", icon: ShieldAlert },
+    { id: "list",    label: "List",    icon: ListIcon },
+    { id: "graph",   label: "Graph",   icon: Network },
+    { id: "assets",  label: "Assets",  icon: ShieldAlert },
+    { id: "devices", label: "Devices", icon: Server },
   ];
   return (
     <div className="inline-flex rounded border border-border overflow-hidden">

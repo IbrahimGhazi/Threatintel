@@ -13,12 +13,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import cytoscape, { type Core, type ElementDefinition } from "cytoscape";
-import coseBilkent from "cytoscape-cose-bilkent";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { apiFetch } from "@/lib/api";
 import { Network, RotateCcw, ZoomIn, ZoomOut } from "lucide-react";
-
-cytoscape.use(coseBilkent);
 
 interface GraphSubgraph {
   nodes: Array<{
@@ -245,12 +242,15 @@ function layoutFor(assetIp: string | null | undefined): cytoscape.LayoutOptions 
   if (assetIp) {
     return { name: "breadthfirst", directed: true, padding: 30, spacingFactor: 1.4 };
   }
+  // Built-in cose layout — good enough for medium graphs without the extra
+  // cose-bilkent dep (which has no shipped TS types).
   return {
-    name: "cose-bilkent",
-    nodeRepulsion: 8000,
-    idealEdgeLength: 90,
-    edgeElasticity: 0.45,
-    gravity: 0.25,
+    name: "cose",
+    padding: 30,
+    nodeRepulsion: () => 8000,
+    idealEdgeLength: () => 90,
+    edgeElasticity: () => 100,
+    gravity: 1,
     numIter: 1500,
     animate: false,
   } as unknown as cytoscape.LayoutOptions;

@@ -30,7 +30,8 @@ from typing import Any, Dict, List, Optional
 
 import sqlalchemy as sa
 from fastapi import (
-    APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status,
+    APIRouter, Depends, File, Form, HTTPException, Query, Response,
+    UploadFile, status,
 )
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -361,3 +362,104 @@ async def upsert_asset(ip: str, payload: AssetIn,
     """), {"ip": ip, "host": payload.hostname, "crit": payload.criticality,
            "bu": payload.business_unit, "notes": payload.notes})).fetchone()
     return AssetOut(**dict(row._mapping))
+
+
+# ── Devices (proxied to attack-paths worker) ─────────────────────────────────
+
+class DeviceCredentialsIn(BaseModel):
+    api_key: Optional[str] = None      # PA only
+    user: Optional[str] = None         # PA fallback or F5
+    password: Optional[str] = None
+
+
+class DeviceCreateIn(BaseModel):
+    vendor: str
+    hostname: str
+    address: str
+    port: int = 443
+    verify_tls: bool = False
+    poll_interval_seconds: int = 3600
+    enabled: bool = True
+    notes: Optional[str] = None
+    created_by: Optional[str] = None
+    credentials: DeviceCredentialsIn
+
+
+class DevicePatchIn(BaseModel):
+    hostname: Optional[str] = None
+    address: Optional[str] = None
+    port: Optional[int] = None
+    verify_tls: Optional[bool] = None
+    poll_interval_seconds: Optional[int] = None
+    enabled: Optional[bool] = None
+    notes: Optional[str] = None
+    credentials: Optional[DeviceCredentialsIn] = None
+
+
+@router.get("/devices")
+async def list_devices() -> List[Dict[str, Any]]:
+    client = AttackPathsClient()
+    if not client.enabled:
+        raise HTTPException(503,
+            detail="attack-paths service not configured (ATTACK_PATHS_URL unset)")
+    return await client.list_devices()
+
+
+@router.post("/devices")
+async def create_device(payload: DeviceCreateIn) -> Dict[str, Any]:
+    client = AttackPathsClient()
+    if not client.enabled:
+        raise HTTPException(503,
+            detail="attack-paths service not configured (ATTACK_PATHS_URL unset)")
+    body = payload.model_dump(exclude_none=True)
+    # Strip null/empty credential fields so the inner validator gets a clean dict
+    creds = body.get("credentials") or {}
+    body["credentials"] = {k: v for k, v in creds.items() if v}
+    try:
+        return await client.create_device(body)
+    except Exception as exc:                                     # noqa: BLE001
+        raise HTTPException(400, detail=str(exc)) from exc
+
+
+@router.get("/devices/{device_id}")
+async def get_device(device_id: uuid.UUID) -> Dict[str, Any]:
+    client = AttackPathsClient()
+    if not client.enabled:
+        raise HTTPException(503,
+            detail="attack-paths service not configured (ATTACK_PATHS_URL unset)")
+    try:
+        return await client.get_device(str(device_id))
+    except Exception as exc:                                     # noqa: BLE001
+        raise HTTPException(404, detail=str(exc)) from exc
+
+
+@router.patch("/devices/{device_id}")
+async def patch_device(device_id: uuid.UUID, payload: DevicePatchIn) -> Dict[str, Any]:
+    client = AttackPathsClient()
+    if not client.enabled:
+        raise HTTPException(503,
+            detail="attack-paths service not configured (ATTACK_PATHS_URL unset)")
+    body = payload.model_dump(exclude_none=True)
+    if "credentials" in body:
+        creds = body["credentials"] or {}
+        body["credentials"] = {k: v for k, v in creds.items() if v}
+    return await client.patch_device(str(device_id), body)
+
+
+@router.delete("/devices/{device_id}", status_code=204, response_class=Response)
+async def delete_device(device_id: uuid.UUID):
+    client = AttackPathsClient()
+    if not client.enabled:
+        raise HTTPException(503,
+            detail="attack-paths service not configured (ATTACK_PATHS_URL unset)")
+    await client.delete_device(str(device_id))
+    return Response(status_code=204)
+
+
+@router.post("/devices/{device_id}/fetch")
+async def fetch_device_now(device_id: uuid.UUID) -> Dict[str, Any]:
+    client = AttackPathsClient()
+    if not client.enabled:
+        raise HTTPException(503,
+            detail="attack-paths service not configured (ATTACK_PATHS_URL unset)")
+    return await client.fetch_device_now(str(device_id))

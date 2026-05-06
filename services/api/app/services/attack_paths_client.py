@@ -55,3 +55,55 @@ class AttackPathsClient:
             )
             r.raise_for_status()
             return r.json()
+
+    # ── Device registry passthroughs ──────────────────────────────────────────
+
+    async def list_devices(self) -> List[Dict[str, Any]]:
+        async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
+            r = await client.get(f"{self.base_url}/internal/devices",
+                                 headers=self._headers())
+            r.raise_for_status()
+            return r.json()
+
+    async def get_device(self, device_id: str) -> Dict[str, Any]:
+        async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
+            r = await client.get(f"{self.base_url}/internal/devices/{device_id}",
+                                 headers=self._headers())
+            r.raise_for_status()
+            return r.json()
+
+    async def create_device(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
+            r = await client.post(f"{self.base_url}/internal/devices",
+                                  json=payload, headers=self._headers())
+            if r.status_code >= 400:
+                # Re-raise with the upstream detail so the user sees vendor errors.
+                raise httpx.HTTPStatusError(
+                    f"{r.status_code}: {r.text}", request=r.request, response=r,
+                )
+            return r.json()
+
+    async def patch_device(self, device_id: str,
+                           payload: Dict[str, Any]) -> Dict[str, Any]:
+        async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
+            r = await client.patch(f"{self.base_url}/internal/devices/{device_id}",
+                                   json=payload, headers=self._headers())
+            r.raise_for_status()
+            return r.json()
+
+    async def delete_device(self, device_id: str) -> None:
+        async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
+            r = await client.delete(f"{self.base_url}/internal/devices/{device_id}",
+                                    headers=self._headers())
+            r.raise_for_status()
+
+    async def fetch_device_now(self, device_id: str) -> Dict[str, Any]:
+        # Allow extra time for a slow first-fetch over the WAN.
+        timeout = httpx.Timeout(connect=5.0, read=120.0, write=10.0, pool=5.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.post(
+                f"{self.base_url}/internal/devices/{device_id}/fetch",
+                headers=self._headers(),
+            )
+            r.raise_for_status()
+            return r.json()

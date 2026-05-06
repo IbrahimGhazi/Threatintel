@@ -30,6 +30,14 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     const text = await res.text().catch(() => "");
     throw new Error(`API ${res.status}: ${text}`);
   }
+  // Bug fix (ultrareview 2026-05-04 C3): empty bodies (204 No Content,
+  // 205 Reset Content, or 200 with content-length: 0) cannot be parsed as
+  // JSON — calling res.json() on them throws "Unexpected end of JSON input"
+  // and breaks every DELETE-style endpoint. Return undefined instead so the
+  // caller's `Promise<void>` resolves cleanly.
+  if (res.status === 204 || res.status === 205) return undefined as T;
+  const len = res.headers.get("content-length");
+  if (len === "0") return undefined as T;
   return res.json() as Promise<T>;
 }
 
@@ -319,16 +327,21 @@ export function getAlertContext(id: string): Promise<AlertContextDetail> {
   return apiFetch(`/alerts/${id}/context`);
 }
 
-export function acknowledgeAlert(id: string, analyst?: string): Promise<void> {
+export function acknowledgeAlert(id: string, acknowledged_by = "analyst"): Promise<Alert> {
   return apiFetch(`/alerts/${id}/acknowledge`, {
-    method: "POST",
-    body: JSON.stringify({ analyst }),
+    method: "POST", body: JSON.stringify({ acknowledged_by }),
   });
 }
 
-export function resolveAlert(id: string): Promise<void> {
-  return apiFetch(`/alerts/${id}/resolve`, { method: "POST" });
+export function resolveAlert(id: string, notes?: string): Promise<Alert> {
+  return apiFetch(`/alerts/${id}/resolve`, {
+    method: "POST", body: JSON.stringify({ notes: notes ?? "" }),
+  });
 }
+
+// (Older duplicates of acknowledgeAlert/resolveAlert lived here — they sent
+//  the wrong body shape (`analyst` instead of `acknowledged_by`/`notes`).
+//  Replaced by the canonical definitions a few lines above.)
 
 // ── Incident types & functions ───────────────────────────────────────────────
 
@@ -435,6 +448,44 @@ export function getBehavioralBaselines(params: {
   if (params.limit)        qs.set("limit",         String(params.limit));
   if (params.offset)       qs.set("offset",        String(params.offset));
   return apiFetch(`/tuning/baselines?${qs}`);
+}
+
+// ── Temporal hour-of-week pattern (heatmap data) ─────────────────────────────
+
+export interface TemporalBucket {
+  hour_of_week: number;   // 0..167
+  day:          number;   // 0=Mon ... 6=Sun
+  hour:         number;   // 0..23
+  mean:         number;
+  std_dev:      number;
+  sample_count: number;
+}
+
+export interface TemporalPattern {
+  entity_type:  string;
+  entity_value: string;
+  metric:       string;
+  buckets:      TemporalBucket[];
+  summary: {
+    covered_hours:    number;
+    total_samples:    number;
+    max_sample_count: number;
+    min_mean:         number;
+    max_mean:         number;
+  };
+}
+
+export function getBaselineTemporal(p: {
+  entity_type:  string;
+  entity_value: string;
+  metric:       string;
+}): Promise<TemporalPattern> {
+  const qs = new URLSearchParams({
+    entity_type:  p.entity_type,
+    entity_value: p.entity_value,
+    metric:       p.metric,
+  });
+  return apiFetch(`/tuning/baselines/temporal?${qs}`);
 }
 
 // ── Learning functions ───────────────────────────────────────────────────────
@@ -578,23 +629,45 @@ export function getLogs(params: {
 
 // ── Sandbox ───────────────────────────────────────────────────────────────────
 
+export interface SandboxIndicatorMatch {
+  type:          "ip" | "domain" | "url" | "sha256" | string;
+  value:         string;
+  indicator_id?: string;
+  severity:      "info" | "low" | "medium" | "high" | "critical" | string;
+  confidence:    number;
+  tags:          string[];
+}
+
+export interface SandboxIndicatorMatches {
+  matches:     SandboxIndicatorMatch[];
+  totals: {
+    checked:        number;
+    matched:        number;
+    by_type?:       Record<string, number>;
+    by_severity?:   Record<string, number>;
+    lookup_failed?: boolean;
+  };
+  score_boost: number;
+}
+
 export interface SandboxResult {
-  id:              string;
-  file_sha256:     string;
-  file_name?:      string;
-  file_type?:      string;
-  file_size?:      number;
-  status:          "pending" | "running" | "completed" | "failed";
-  verdict?:        string;
-  malware_score?:  number;
-  malware_family?: string;
-  sandbox_engine?: string;
-  error?:          string;
-  extracted_iocs?: Record<string, unknown>;
-  report?:         Record<string, unknown>;
-  submitted_at?:   string;
-  created_at:      string;
-  updated_at:      string;
+  id:                 string;
+  file_sha256:        string;
+  file_name?:         string;
+  file_type?:         string;
+  file_size?:         number;
+  status:             "pending" | "running" | "completed" | "failed";
+  verdict?:           string;
+  malware_score?:     number;
+  malware_family?:    string;
+  sandbox_engine?:    string;
+  error?:             string;
+  extracted_iocs?:    Record<string, unknown>;
+  indicator_matches?: SandboxIndicatorMatches;
+  report?:            Record<string, unknown>;
+  submitted_at?:      string;
+  created_at:         string;
+  updated_at:         string;
 }
 
 export function getSandboxResults(params: {
@@ -1205,6 +1278,344 @@ export async function getUrlIntelRecent(params: {
   return apiFetch<UrlIntelRecentPage>(`/url-intel/recent?${q.toString()}`);
 }
 
+
+// ── Firewall Config Audit (PA CVE matcher) ───────────────────────────────────
+
+export type FirewallSyncStatus = "ok" | "auth_failed" | "unreachable" | "parse_error";
+
+export interface FirewallDevice {
+  id:                     string;
+  vendor:                 string;
+  product:                string;
+  display_name:           string;
+  hostname:               string;
+  port:                   number;
+  verify_cert:            boolean;
+  has_custom_ca:          boolean;
+  enabled:                boolean;
+  api_key_masked:         string;
+  created_at:             string;
+  last_sync_at?:          string | null;
+  last_sync_status?:      FirewallSyncStatus | string | null;
+  last_sync_error?:       string | null;
+  last_software_version?: string | null;
+  last_serial?:           string | null;
+  last_model?:            string | null;
+}
+
+export interface FirewallDeviceCreate {
+  display_name:   string;
+  hostname:       string;
+  port?:          number;
+  api_key:        string;
+  verify_cert?:   boolean;
+  custom_ca_pem?: string | null;
+  vendor?:        string;
+  product?:       string;
+}
+
+export interface FirewallTestConnectionResult {
+  ok:         boolean;
+  hostname?:  string | null;
+  serial?:    string | null;
+  model?:     string | null;
+  sw_version?: string | null;
+  family?:    string | null;
+  uptime?:    string | null;
+  error?:     string | null;
+}
+
+export type FirewallFindingStatus = "applies" | "not_applicable" | "uncertain";
+
+export interface FirewallFinding {
+  id:               string;
+  config_id:        string;
+  device_id:        string;
+  advisory_id:      string;
+  cve_id:           string | null;
+  title:            string | null;
+  cvss_score:       number | null;
+  cvss_severity:    string | null;
+  status:           FirewallFindingStatus;
+  severity:         string;
+  evidence:         Record<string, any>;
+  recommendation:   string | null;
+  references_urls?: string[];
+  workaround?:      string | null;
+  evaluated_at:     string;
+  acknowledged_at?: string | null;
+  dismissed_at?:    string | null;
+}
+
+export interface FirewallAdvisory {
+  id:                  string;
+  vendor:              string;
+  cve_id:              string;
+  vendor_advisory_id?: string | null;
+  title:               string;
+  cvss_score:          number | null;
+  cvss_severity:       string;
+  published_at:        string;
+  updated_at:          string;
+  affected_products:   string[];
+  affected_versions:   string[];
+  fixed_versions?:     string[] | null;
+  has_preconditions:   boolean;
+  curation_status:     "curated" | "uncurated" | "drafted" | string;
+  curated_at?:         string | null;
+  curated_by?:         string | null;
+  references_urls?:    string[];
+  workaround?:         string | null;
+}
+
+export interface FirewallAdvisoryStats {
+  total:        number;
+  curated:      number;
+  uncurated:    number;
+  drafted:      number;
+  by_severity:  Record<string, number>;
+  last_updated?: string | null;
+}
+
+export interface FirewallSyncDeviceSummary {
+  device_id:        string;
+  display_name:     string;
+  hostname:         string;
+  sync: {
+    ok:               boolean;
+    snapshot_changed?: boolean;
+    config_id?:       string | null;
+    raw_xml_size?:    number | null;
+    redaction_stats?: Record<string, number>;
+    sw_version?:      string | null;
+    error?:           string | null;
+    phase?:           string | null;
+  };
+  verdicts:         { applies: number; not_applicable: number; uncertain: number };
+  alerts_created:   number;
+  alerts_resolved:  number;
+}
+
+export interface FirewallSyncAllResult {
+  ok:         boolean;
+  csaf?:      Record<string, any>;
+  devices:    FirewallSyncDeviceSummary[];
+  elapsed_ms: number;
+  message?:   string;
+}
+
+export interface FirewallEvaluateResult {
+  ok:               boolean;
+  config_id?:       string | null;
+  rules_evaluated:  number;
+  findings:         { applies?: number; not_applicable?: number; uncertain?: number };
+  error?:           string | null;
+}
+
+export interface FirewallSyncResult {
+  ok:               boolean;
+  config_id?:       string | null;
+  snapshot_changed: boolean;
+  raw_xml_size?:    number | null;
+  raw_xml_sha256?:  string | null;
+  redaction_stats:  Record<string, number>;
+  facts:            Record<string, any>;
+  error?:           string | null;
+}
+
+export interface CsafIngestResult {
+  ok:                  boolean;
+  fetched?:            number;
+  parse_failed?:       number;
+  too_old?:            number;
+  inserted?:           number;
+  refreshed_uncurated?: number;
+  preserved_curated?:  number;
+  sources?:            string[];
+  elapsed_ms?:         number;
+  error?:              string | null;
+}
+
+// ── Firewall API client functions ─────────────────────────────────────
+
+export function listFirewallDevices(): Promise<FirewallDevice[]> {
+  return apiFetch<FirewallDevice[]>("/firewall/devices");
+}
+
+export function getFirewallDevice(id: string): Promise<FirewallDevice> {
+  return apiFetch<FirewallDevice>(`/firewall/devices/${id}`);
+}
+
+export function checkFirewallConnection(
+  body: FirewallDeviceCreate,
+): Promise<FirewallTestConnectionResult> {
+  return apiFetch<FirewallTestConnectionResult>("/firewall/devices/check", {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
+
+export function registerFirewallDevice(
+  body: FirewallDeviceCreate,
+): Promise<FirewallDevice> {
+  return apiFetch<FirewallDevice>("/firewall/devices", {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
+
+export function deleteFirewallDevice(id: string): Promise<void> {
+  return apiFetch<void>(`/firewall/devices/${id}`, { method: "DELETE" });
+}
+
+export function testFirewallDevice(
+  id: string,
+): Promise<FirewallTestConnectionResult> {
+  return apiFetch<FirewallTestConnectionResult>(
+    `/firewall/devices/${id}/test`, { method: "POST" },
+  );
+}
+
+export function syncFirewallDevice(id: string): Promise<FirewallSyncResult> {
+  return apiFetch<FirewallSyncResult>(
+    `/firewall/devices/${id}/sync`, { method: "POST" },
+  );
+}
+
+export function evaluateFirewallDevice(
+  id: string,
+): Promise<FirewallEvaluateResult> {
+  return apiFetch<FirewallEvaluateResult>(
+    `/firewall/devices/${id}/evaluate`, { method: "POST" },
+  );
+}
+
+export function getFirewallDeviceFindings(
+  id: string,
+  status?: FirewallFindingStatus,
+): Promise<FirewallFinding[]> {
+  const q = new URLSearchParams();
+  if (status) q.set("status_filter", status);
+  return apiFetch<FirewallFinding[]>(
+    `/firewall/devices/${id}/findings?${q.toString()}`,
+  );
+}
+
+export function listFirewallAdvisories(opts: {
+  curation_status?: "curated" | "uncurated" | "drafted";
+  severity?:        string;
+} = {}): Promise<FirewallAdvisory[]> {
+  const q = new URLSearchParams();
+  if (opts.curation_status) q.set("curation_status", opts.curation_status);
+  if (opts.severity)        q.set("severity", opts.severity);
+  return apiFetch<FirewallAdvisory[]>(
+    `/firewall/advisories?${q.toString()}`,
+  );
+}
+
+export function getFirewallAdvisoryStats(): Promise<FirewallAdvisoryStats> {
+  return apiFetch<FirewallAdvisoryStats>("/firewall/advisories/stats");
+}
+
+export function refreshFirewallAdvisories(): Promise<CsafIngestResult> {
+  return apiFetch<CsafIngestResult>("/firewall/advisories/refresh", {
+    method: "POST",
+  });
+}
+
+export function syncAllFirewalls(): Promise<FirewallSyncAllResult> {
+  return apiFetch<FirewallSyncAllResult>("/firewall/sync-all", {
+    method: "POST",
+  });
+}
+
+export function acknowledgeFirewallFinding(
+  id: string, body: { note?: string; actor?: string } = {},
+): Promise<FirewallFinding> {
+  return apiFetch<FirewallFinding>(`/firewall/findings/${id}/acknowledge`, {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
+
+export function dismissFirewallFinding(
+  id: string, body: { note?: string; actor?: string } = {},
+): Promise<FirewallFinding> {
+  return apiFetch<FirewallFinding>(`/firewall/findings/${id}/dismiss`, {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
+
+export interface FirewallFactCatalogEntry {
+  name:        string;
+  description: string;
+}
+
+export function listFirewallFacts(): Promise<FirewallFactCatalogEntry[]> {
+  return apiFetch<FirewallFactCatalogEntry[]>("/firewall/advisories/facts");
+}
+
+export interface FirewallCurationLogEntry {
+  at:      string;     // ISO timestamp
+  by:      string;     // 'human:ui' / 'human:repo' / 'analyst-…' / 'llm:…'
+  action:  string;     // 'patch' / 'yaml_create' / 'yaml_update'
+  summary: string;
+}
+
+export interface FirewallAdvisoryRaw extends FirewallAdvisory {
+  description?:  string | null;
+  preconditions: Record<string, any>;
+  curation_log?: FirewallCurationLogEntry[];
+  raw_advisory?: any;
+}
+
+export function getFirewallAdvisoryRaw(
+  id: string,
+): Promise<FirewallAdvisoryRaw> {
+  return apiFetch<FirewallAdvisoryRaw>(`/firewall/advisories/${id}/raw`);
+}
+
+export function patchFirewallAdvisory(
+  id: string,
+  body: { preconditions: Record<string, any>; curation_status?: string; curated_by?: string },
+): Promise<FirewallAdvisory> {
+  return apiFetch<FirewallAdvisory>(`/firewall/advisories/${id}`, {
+    method: "PATCH", body: JSON.stringify(body),
+  });
+}
+
+// ── Preview endpoint (followup-4): evaluate a draft rule against every
+// registered device's latest config snapshot WITHOUT persisting findings.
+// Lets the curation editor render verdicts inline before save.
+
+export interface FirewallPreviewDeviceVerdict {
+  device_id:         string;
+  display_name:      string;
+  hostname:          string;
+  software_version:  string | null;
+  config_fetched_at: string | null;
+  status:            "applies" | "not_applicable" | "uncertain" | "no_config";
+  severity:          string;
+  reasons:           string[];
+  facts_evaluated:   { fact: string; value: any }[];
+}
+
+export interface FirewallPreviewResponse {
+  advisory_id:            string;
+  cve_id:                 string;
+  used_preconditions:     Record<string, any>;
+  used_affected_versions: string[];
+  counts:                 Record<string, number>;
+  devices:                FirewallPreviewDeviceVerdict[];
+}
+
+export function previewFirewallAdvisory(
+  id:   string,
+  body: { preconditions?: Record<string, any>; affected_versions?: string[] },
+): Promise<FirewallPreviewResponse> {
+  return apiFetch<FirewallPreviewResponse>(
+    `/firewall/advisories/${id}/preview`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
 // ── Attack Paths & Fan-Out Analysis ──────────────────────────────────────────
 
 export type AttackPathFindingKind   = "path" | "fanout";
@@ -1293,8 +1704,6 @@ export async function uploadAttackPathConfig(
   fd.append("file", file);
   fd.append("vendor", vendor);
   if (hostname) fd.append("hostname", hostname);
-  // FormData uploads must NOT carry a Content-Type header (browser sets it
-  // with the multipart boundary). Bypass apiFetch which forces JSON.
   const res = await fetch(`${API_BASE}/attack-paths/configs`, {
     method: "POST",
     headers: { "X-API-Key": API_KEY },
@@ -1312,4 +1721,84 @@ export async function triggerAttackPathRun(uploadIds: string[],
     method: "POST",
     body: JSON.stringify({ upload_ids: uploadIds, triggered_by: triggeredBy }),
   });
+}
+
+// ── Attack-Paths device registry ─────────────────────────────────────────────
+
+export type AttackPathDeviceVendor = "panos" | "f5" | "fortinet";
+export type AttackPathDeviceStatus =
+  "pending" | "ok" | "auth_failed" | "unreachable" | "parse_error" | "disabled";
+
+export interface AttackPathDevice {
+  id: string;
+  vendor: AttackPathDeviceVendor;
+  role: string;
+  hostname: string;
+  address: string;
+  port: number;
+  verify_tls: boolean;
+  enabled: boolean;
+  poll_interval_seconds: number;
+  last_polled_at?: string;
+  last_status: AttackPathDeviceStatus;
+  last_error?: string;
+  last_config_sha256?: string;
+  last_upload_id?: string;
+  last_run_id?: string;
+  is_edge: boolean;
+  notes?: string;
+  created_by?: string;
+  created_at: string;
+  updated_at: string;
+  credentials_summary: Record<string, string>;
+}
+
+export interface AttackPathDeviceCreate {
+  vendor: AttackPathDeviceVendor;
+  hostname: string;
+  address: string;
+  port?: number;
+  verify_tls?: boolean;
+  poll_interval_seconds?: number;
+  enabled?: boolean;
+  notes?: string;
+  created_by?: string;
+  credentials: {
+    api_key?: string;       // PA
+    user?: string;          // PA fallback or F5
+    password?: string;
+  };
+}
+
+export async function listAttackPathDevices(): Promise<AttackPathDevice[]> {
+  return apiFetch<AttackPathDevice[]>(`/attack-paths/devices`);
+}
+
+export async function createAttackPathDevice(
+  payload: AttackPathDeviceCreate,
+): Promise<AttackPathDevice> {
+  return apiFetch<AttackPathDevice>(`/attack-paths/devices`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function patchAttackPathDevice(
+  id: string,
+  payload: Partial<AttackPathDeviceCreate>,
+): Promise<AttackPathDevice> {
+  return apiFetch<AttackPathDevice>(`/attack-paths/devices/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteAttackPathDevice(id: string): Promise<void> {
+  await apiFetch<void>(`/attack-paths/devices/${id}`, { method: "DELETE" });
+}
+
+export async function fetchAttackPathDeviceNow(
+  id: string,
+): Promise<{ ok: boolean; changed?: boolean; sha256?: string; error?: string; detail?: string }> {
+  return apiFetch(`/attack-paths/devices/${id}/fetch`, { method: "POST" });
 }
