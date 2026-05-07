@@ -239,22 +239,32 @@ function Legend() {
 }
 
 function layoutFor(assetIp: string | null | undefined): cytoscape.LayoutOptions {
-  if (assetIp) {
-    return { name: "breadthfirst", directed: true, padding: 30, spacingFactor: 1.4 };
-  }
-  // Built-in cose layout — good enough for medium graphs without the extra
-  // cose-bilkent dep (which has no shipped TS types).
+  // Top-down network-diagram layout: Internet at the root, edge devices
+  // (firewalls), then LB tier (VIPs/Pools), then leaves (Hosts) at the bottom.
+  // `breadthfirst` is built into Cytoscape so we don't need an extra layout dep.
   return {
-    name: "cose",
-    padding: 30,
-    nodeRepulsion: () => 8000,
-    idealEdgeLength: () => 90,
-    edgeElasticity: () => 100,
-    gravity: 1,
-    numIter: 1500,
+    name: "breadthfirst",
+    directed: true,
+    roots: 'node[kind = "Internet"]',
+    padding: 40,
+    spacingFactor: 1.5,
+    nodeDimensionsIncludeLabels: true,
+    grid: false,
     animate: false,
   } as unknown as cytoscape.LayoutOptions;
 }
+
+// Inline SVG cloud — shipped as a data URL so the runtime image needs no
+// extra static assets. White fill so it reads on the dark canvas; we'll
+// tint it red via background-color.
+const INTERNET_CLOUD_SVG =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 70" fill="#fff">' +
+    '<path d="M30,55 C12,55 8,40 22,32 C18,18 38,10 50,18 C56,8 80,8 86,22 ' +
+            'C108,18 116,42 96,52 C100,62 82,68 72,60 L40,60 C36,64 30,62 30,55 Z"/>' +
+    "</svg>",
+  );
 
 function cyStyle(): cytoscape.Stylesheet[] {
   return [
@@ -265,19 +275,68 @@ function cyStyle(): cytoscape.Stylesheet[] {
           KIND_COLORS[ele.data("kind") as string] ?? "#475569",
         label: "data(label)",
         color: "#e2e8f0",
-        "font-size": 9,
+        "font-size": 10,
+        "font-weight": 500,
         "text-wrap": "wrap",
-        "text-max-width": "120px",
+        "text-max-width": "140px",
         "text-valign": "bottom",
-        "text-margin-y": 4,
-        "border-width": 1,
+        "text-margin-y": 6,
+        "text-outline-width": 2,
+        "text-outline-color": "#0f172a",
+        "border-width": 1.5,
         "border-color": "#0f172a",
-        width:  (ele: cytoscape.NodeSingular) =>
-          ele.data("kind") === "Internet" ? 32 :
-          ele.data("kind") === "Asset"    ? 28 : 22,
-        height: (ele: cytoscape.NodeSingular) =>
-          ele.data("kind") === "Internet" ? 32 :
-          ele.data("kind") === "Asset"    ? 28 : 22,
+        width:  (ele: cytoscape.NodeSingular) => _nodeSize(ele.data("kind"))[0],
+        height: (ele: cytoscape.NodeSingular) => _nodeSize(ele.data("kind"))[1],
+      },
+    },
+    // Internet: render as a cloud (SVG background) at the top of the diagram.
+    // The breadthfirst layout already pins it to the root row.
+    {
+      selector: 'node[kind = "Internet"]',
+      style: {
+        shape: "round-rectangle",
+        "background-color": "#dc2626",
+        "background-image": INTERNET_CLOUD_SVG,
+        "background-fit": "contain",
+        "background-clip": "none",
+        "background-opacity": 0,         // hide the rectangle, show only the SVG
+        "border-width": 0,
+        label: "INTERNET",
+        "font-size": 13,
+        "font-weight": 700,
+        color: "#fca5a5",
+        "text-valign": "center",
+        "text-margin-y": 0,
+      },
+    },
+    // Edge devices and LB infrastructure get distinctive shapes so a glance
+    // at the diagram tells you the role (network-diagram-style).
+    {
+      selector: 'node[kind = "Zone"]',
+      style: {
+        shape: "round-rectangle",
+        "border-width": 2,
+        "border-color": "#a78bfa",
+      },
+    },
+    {
+      selector: 'node[kind = "VIP"]',
+      style: { shape: "diamond" },
+    },
+    {
+      selector: 'node[kind = "Pool"]',
+      style: { shape: "hexagon" },
+    },
+    {
+      selector: 'node[kind = "Subnet"]',
+      style: { shape: "round-rectangle" },
+    },
+    {
+      selector: 'node[kind = "Asset"]',
+      style: {
+        shape: "star",
+        "border-width": 2,
+        "border-color": "#facc15",
       },
     },
     {
@@ -290,7 +349,14 @@ function cyStyle(): cytoscape.Stylesheet[] {
           EDGE_COLORS[ele.data("type") as string] ?? "#475569",
         "target-arrow-shape": "triangle",
         "curve-style": "bezier",
-        opacity: 0.7,
+        opacity: 0.75,
+        label: (ele: cytoscape.EdgeSingular) => _edgeLabel(ele.data("type")),
+        "font-size": 8,
+        color: "#94a3b8",
+        "text-rotation": "autorotate",
+        "text-background-color": "#0f172a",
+        "text-background-opacity": 0.6,
+        "text-background-padding": "2px",
       },
     },
     {
@@ -301,4 +367,29 @@ function cyStyle(): cytoscape.Stylesheet[] {
       },
     },
   ];
+}
+
+function _nodeSize(kind: string): [number, number] {
+  switch (kind) {
+    case "Internet":  return [80, 56];   // cloud — wider than tall
+    case "Asset":     return [38, 38];
+    case "VIP":       return [32, 32];
+    case "Pool":      return [32, 32];
+    case "Zone":      return [44, 28];
+    case "Subnet":    return [40, 22];
+    case "Host":      return [22, 22];
+    default:          return [24, 24];
+  }
+}
+
+function _edgeLabel(type: string): string {
+  // Short readable labels for the most-trafficked edge types — most edges
+  // stay unlabelled to keep the diagram clean.
+  switch (type) {
+    case "EXPOSES":     return "exposes";
+    case "FORWARDS_TO": return "lb";
+    case "MEMBER_OF":   return "member";
+    case "DNAT_TO":     return "dnat";
+    default:            return "";
+  }
 }
