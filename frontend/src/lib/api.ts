@@ -760,13 +760,16 @@ export interface UrlIntelHistogram {
 export interface UrlIntelAccuracy {
   labeled_total: number;
   overall_accuracy: number;
-  confusion_matrix: Record<string, Record<string, number>>;
   per_class: Record<
     string,
     { tp: number; fp: number; fn: number;
       precision: number; recall: number; f1: number; support: number }
   >;
   labels: string[];
+  // Model Health fields (added when the confusion matrix UI was removed).
+  last_labeled_at: string | null;
+  total_labels: number;
+  accuracy_history: { date: string; accuracy: number | null }[];
 }
 
 export interface UrlIntelRecentRow {

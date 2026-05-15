@@ -294,73 +294,111 @@ function Histogram({ h }: { h: UrlIntelHistogram }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 6. Three-basis accuracy panel (ML / Content / Combined)
+// 6. Model Health card — single rollup of overall accuracy + 14-day sparkline
 // ═══════════════════════════════════════════════════════════════════════════
+//
+// Replaces the previous three-basis AccuracyCard panel (ML / Content / Combined,
+// each with a confusion-matrix mini-table). Operators stopped consulting the
+// confusion matrix once the auto-curator started managing labels, so the panel
+// collapsed into one widget showing only the combined-basis health.
 
-function MiniConfusion({ acc }: { acc: UrlIntelAccuracy }) {
-  const labels = acc.labels;
-  const total = acc.labeled_total || 1;
+function AccuracySparkline({ history }: {
+  history: { date: string; accuracy: number | null }[];
+}) {
+  // Inline SVG polyline — keep the dependency surface small and match the
+  // hand-rolled Histogram / TagDonut idiom elsewhere on this page.
+  const W = 220, H = 48, PAD = 4;
+  const innerW = W - PAD * 2, innerH = H - PAD * 2;
+  const xStep = history.length > 1 ? innerW / (history.length - 1) : 0;
+  // y-axis fixed to [0, 1] so the line communicates absolute accuracy,
+  // not a zoomed view of recent noise.
+  const yFor = (a: number) => PAD + innerH - a * innerH;
+
+  const plotted = history.flatMap((p, i) =>
+    p.accuracy === null ? [] : [{ i, a: p.accuracy }],
+  );
+  if (plotted.length === 0) {
+    return (
+      <div className="h-12 flex items-center justify-center text-2xs text-text-muted">
+        no labeled data in last 14 days
+      </div>
+    );
+  }
+  const points = plotted.map(p => `${PAD + p.i * xStep},${yFor(p.a)}`).join(" ");
+  const last = plotted[plotted.length - 1];
   return (
-    <table className="w-full text-2xs font-mono border-collapse">
-      <thead>
-        <tr className="text-text-muted">
-          <th className="text-left py-0.5 pr-1">t↓ / p→</th>
-          {labels.map(l => <th key={l} className="px-1 py-0.5 text-right capitalize">{l.slice(0,3)}</th>)}
-        </tr>
-      </thead>
-      <tbody>
-        {labels.map(t => (
-          <tr key={t} className="border-t border-border">
-            <td className="py-0.5 pr-1 capitalize text-text-secondary">{t.slice(0,3)}</td>
-            {labels.map(p => {
-              const v = acc.confusion_matrix?.[t]?.[p] ?? 0;
-              const diag = t === p;
-              return (
-                <td key={p} className="px-1 py-0.5 text-right">
-                  <span className={clsx(
-                    "inline-block px-1 rounded",
-                    diag ? "bg-emerald-500/15 text-emerald-400"
-                         : v > 0 ? "bg-red-500/10 text-red-400" : "text-text-muted",
-                  )} title={`${fmtPct(v/total)} of labeled`}>{v}</span>
-                </td>
-              );
-            })}
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-12" preserveAspectRatio="none">
+      {/* 50% baseline */}
+      <line x1={PAD} x2={W - PAD} y1={yFor(0.5)} y2={yFor(0.5)}
+            stroke="currentColor" className="text-border" strokeDasharray="2 3" strokeWidth={0.5} />
+      <polyline points={points} fill="none"
+                stroke="currentColor" className="text-accent" strokeWidth={1.5}
+                strokeLinejoin="round" strokeLinecap="round" />
+      <circle cx={PAD + last.i * xStep} cy={yFor(last.a)} r={2} className="fill-accent" />
+    </svg>
   );
 }
 
-function AccuracyCard({ title, basis, icon }: {
-  title: string;
-  basis: "ml" | "content" | "combined";
-  icon: React.ReactNode;
-}) {
+function ModelHealthCard() {
+  // Combined basis — that's what the WCA gate actually uses, so it's the
+  // most operationally meaningful single number.
   const { data: acc } = useSWR<UrlIntelAccuracy>(
-    ["/url-intel/accuracy", basis],
-    () => getUrlIntelAccuracy(basis),
+    ["/url-intel/accuracy", "combined"],
+    () => getUrlIntelAccuracy("combined"),
     { refreshInterval: 20_000 },
   );
-  return (
-    <div className="rounded-lg border border-border/60 bg-bg-elevated/40 p-3 space-y-2">
-      <div className="flex items-center gap-1.5 text-xs font-semibold text-text-primary">
-        {icon}
-        <span>{title}</span>
+  if (!acc) {
+    return (
+      <div className="rounded-lg border border-border/60 bg-bg-elevated/40 p-5 text-2xs text-text-muted">
+        Loading model health…
       </div>
-      {acc && acc.labeled_total > 0 ? (
-        <>
+    );
+  }
+  const hasData = acc.total_labels > 0;
+  const lastLabelText = acc.last_labeled_at
+    ? `${formatDistanceToNow(parseISO(acc.last_labeled_at), { addSuffix: false })} ago`
+    : "never";
+  return (
+    <div className="rounded-lg border border-border/60 bg-bg-elevated/40 p-5">
+      <div className="grid md:grid-cols-3 gap-5 items-center">
+        {/* Headline accuracy */}
+        <div className="space-y-1">
+          <div className="text-2xs uppercase tracking-wider text-text-muted">Overall accuracy</div>
           <div className="flex items-baseline gap-2">
-            <span className="text-2xl font-semibold tabular-nums text-text-primary">
-              {fmtPct(acc.overall_accuracy)}
+            <span className="text-4xl font-semibold tabular-nums text-text-primary leading-none">
+              {hasData ? fmtPct(acc.overall_accuracy) : "–"}
             </span>
-            <span className="text-2xs text-text-muted">n={acc.labeled_total}</span>
+            {hasData && (
+              <span className="text-2xs text-text-muted tabular-nums">
+                of {fmtNum(acc.labeled_total)} eval
+              </span>
+            )}
           </div>
-          <MiniConfusion acc={acc} />
-        </>
-      ) : (
-        <div className="text-2xs text-text-muted py-4 text-center">no labeled data</div>
-      )}
+        </div>
+
+        {/* Label volume + freshness */}
+        <div className="space-y-2 text-xs">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-text-muted">Total labels</span>
+            <span className="font-mono tabular-nums text-text-primary">
+              {fmtNum(acc.total_labels)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-text-muted">Last label</span>
+            <span className="font-mono tabular-nums text-text-secondary">{lastLabelText}</span>
+          </div>
+        </div>
+
+        {/* 14-day accuracy sparkline */}
+        <div className="space-y-1">
+          <div className="flex items-center justify-between">
+            <span className="text-2xs uppercase tracking-wider text-text-muted">14-day trend</span>
+            <span className="text-2xs text-text-muted font-mono">0–100%</span>
+          </div>
+          <AccuracySparkline history={acc.accuracy_history} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -679,21 +717,17 @@ export default function UrlIntelPage() {
         </section>
       </div>
 
-      {/* ── 6. 3-basis accuracy ─────────────────────────────────── */}
+      {/* ── 6. Model Health ─────────────────────────────────────── */}
       <section className="rounded-xl border border-border/70 bg-bg-surface p-5 space-y-3 shadow-sm">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-text-primary flex items-center gap-2">
-            <Target className="w-4 h-4 text-accent" /> Accuracy
+            <Target className="w-4 h-4 text-accent" /> Model Health
           </h2>
           <span className="text-[10px] text-text-muted font-mono tabular-nums">
             {stats.labeled} labeled
           </span>
         </div>
-        <div className="grid lg:grid-cols-3 gap-3">
-          <AccuracyCard title="ML"       basis="ml"       icon={<Database className="w-3.5 h-3.5 text-accent" />} />
-          <AccuracyCard title="Content"  basis="content"  icon={<Globe    className="w-3.5 h-3.5 text-accent" />} />
-          <AccuracyCard title="Combined" basis="combined" icon={<Layers   className="w-3.5 h-3.5 text-accent" />} />
-        </div>
+        <ModelHealthCard />
       </section>
 
       {/* ── 7. Top domains with indicator-state ─── 10. Tag donut ── 11. Threshold knob ── */}

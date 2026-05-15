@@ -11,7 +11,7 @@ Endpoints:
   GET  /url-intel/histogram            — ML confidence buckets × verdict (legacy)
   GET  /url-intel/combined-histogram   — combined-score buckets × verdict
   GET  /url-intel/heatmap              — 2-D ml_risk × content_risk density
-  GET  /url-intel/accuracy             — confusion matrix (basis=ml|content|combined)
+  GET  /url-intel/accuracy             — model-health rollup (basis=ml|content|combined)
   GET  /url-intel/indicator-tags       — tag distribution across active indicators
   GET  /url-intel/indicator-lifecycle  — last-N upsert/deactivate events
   GET  /url-intel/recent               — paginated recent predictions (+combined/indicator cols)
@@ -485,11 +485,16 @@ async def accuracy(
     _: str = Depends(require_api_key),
 ):
     """
-    Precision/recall/F1 per class + confusion matrix, evaluated against
-    ground_truth. `basis` chooses which verdict column is treated as "pred":
+    Model-health rollup evaluated against ground_truth. `basis` chooses
+    which verdict column is treated as "pred":
       * ml       — prediction (url-intel GBDT)
       * content  — content_verdict (web-content-analyzer)
       * combined — computed combined verdict
+
+    Returns overall_accuracy, per-class precision/recall/F1, last-labeled
+    timestamp, total label count, and a 14-day daily accuracy history for
+    the Model Health card. The confusion matrix is no longer emitted —
+    the frontend stopped rendering it after the URL-Intel redesign.
     """
     if basis == "ml":
         pred_expr = "r.prediction"
@@ -519,22 +524,34 @@ async def accuracy(
     """))).mappings().all()
 
     labels = ["benign", "suspicious", "malicious"]
-    cm: Dict[str, Dict[str, int]] = {t: {p: 0 for p in labels} for t in labels}
+    # Tally correct vs. total without materialising the confusion matrix —
+    # we only need the diagonals + grand total for overall_accuracy and the
+    # per-class precision/recall/F1.
+    correct_by: Dict[str, int] = {l: 0 for l in labels}
+    fp_by:      Dict[str, int] = {l: 0 for l in labels}
+    fn_by:      Dict[str, int] = {l: 0 for l in labels}
+    support_by: Dict[str, int] = {l: 0 for l in labels}
     total = 0
     for r in rows:
         t, p, n = r["truth"], r["pred"], int(r["n"])
-        if t in cm and p in cm[t]:
-            cm[t][p] += n
-            total += n
+        if t not in correct_by or p not in correct_by:
+            continue
+        total += n
+        support_by[t] += n
+        if t == p:
+            correct_by[t] += n
+        else:
+            fp_by[p] += n
+            fn_by[t] += n
 
-    correct = sum(cm[l][l] for l in labels)
+    correct = sum(correct_by.values())
     overall_acc = (correct / total) if total else 0.0
 
     per_class = {}
     for l in labels:
-        tp = cm[l][l]
-        fp = sum(cm[t][l] for t in labels if t != l)
-        fn = sum(cm[l][p] for p in labels if p != l)
+        tp = correct_by[l]
+        fp = fp_by[l]
+        fn = fn_by[l]
         precision = tp / (tp + fp) if (tp + fp) else 0.0
         recall    = tp / (tp + fn) if (tp + fn) else 0.0
         f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
@@ -543,16 +560,66 @@ async def accuracy(
             "precision": round(precision, 4),
             "recall":    round(recall, 4),
             "f1":        round(f1, 4),
-            "support":   tp + fn,
+            "support":   support_by[l],
         }
+
+    # ── Model Health extras ───────────────────────────────────────────────
+    # last_labeled_at / total_labels are basis-independent (a labeled row is
+    # labeled regardless of which "pred" column we evaluate).
+    health_row = (await db.execute(text("""
+        SELECT
+          MAX(labeled_at)                                  AS last_labeled_at,
+          COUNT(*) FILTER (WHERE ground_truth IS NOT NULL) AS total_labels
+        FROM url_reputation
+    """))).mappings().one()
+    last_labeled_at = health_row["last_labeled_at"]
+    total_labels = int(health_row["total_labels"] or 0)
+
+    # 14-day daily accuracy rollup, basis-aware. We bucket by labeled_at::date
+    # and compute correct / total per day. Days with zero labeled rows are
+    # filled in with accuracy=null so the sparkline keeps a continuous x-axis.
+    history_rows = (await db.execute(text(f"""
+        WITH days AS (
+          SELECT generate_series(
+            (CURRENT_DATE - INTERVAL '13 days')::date,
+            CURRENT_DATE::date,
+            INTERVAL '1 day'
+          )::date AS d
+        ),
+        per_day AS (
+          SELECT
+            r.labeled_at::date AS d,
+            COUNT(*)::bigint                                            AS total,
+            COUNT(*) FILTER (WHERE r.ground_truth = ({pred_expr}))::bigint AS correct
+          FROM {_UR_WITH_CRS}
+          WHERE r.ground_truth IS NOT NULL
+            AND ({pred_expr}) IS NOT NULL
+            AND r.labeled_at >= (CURRENT_DATE - INTERVAL '13 days')
+          GROUP BY r.labeled_at::date
+        )
+        SELECT days.d::text AS date,
+               COALESCE(per_day.total, 0)::bigint   AS total,
+               COALESCE(per_day.correct, 0)::bigint AS correct
+        FROM days LEFT JOIN per_day USING (d)
+        ORDER BY days.d
+    """))).mappings().all()
+    accuracy_history = [
+        {
+            "date": h["date"],
+            "accuracy": (h["correct"] / h["total"]) if h["total"] else None,
+        }
+        for h in history_rows
+    ]
 
     return {
         "basis": basis,
         "labeled_total": total,
         "overall_accuracy": round(overall_acc, 4),
-        "confusion_matrix": cm,
         "per_class": per_class,
         "labels": labels,
+        "last_labeled_at": last_labeled_at.isoformat() if last_labeled_at else None,
+        "total_labels": total_labels,
+        "accuracy_history": accuracy_history,
     }
 
 
