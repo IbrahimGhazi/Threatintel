@@ -1,0 +1,156 @@
+# =============================================================================
+# values-trial-ova.yaml — overrides for trial-OVA helm install
+#
+# Minimum-viable trial: single-replica every service, local-path PVCs,
+# license enforcement on, dashboard reachable on a stable NodePort the
+# OVA description tells the customer about.
+#
+# Layered on top of:
+#   tools/ova-builder/packer/files/  (this file)
+#   deploy/k8s/charts/ti-platform/values.yaml          (defaults)
+#
+# IMPORTANT: do NOT define the same top-level key twice in this file.
+# YAML lets you do it but the LATER definition silently overrides the
+# earlier — that's how we shipped v2 without the license mount working.
+# Each top-level service block (api, frontend, sandbox, …) appears
+# exactly once below.
+# =============================================================================
+
+global:
+  # Single-node cluster — disable zone spread anti-affinity rules that
+  # would prevent pods from scheduling.
+  topologySpread:
+    enabled: false
+  # k3s ships local-path-provisioner as the default StorageClass.
+  storageClass: local-path
+
+# Dev-shaped secrets baked into the image.  In a trial OVA the customer
+# isn't expected to operate production-grade secrets — they evaluate
+# against a self-contained box.  Real deployments use external-secrets.
+secrets:
+  existingSecret: ""
+  create:
+    enabled: true
+    POSTGRES_PASSWORD: "tiplatform"
+    REDIS_PASSWORD:    "tiplatform"
+    NATS_PASSWORD:     "tiplatform"
+    SECRET_KEY:        "trial-ova-secret-key-change-on-prod"
+    API_KEY:           "agDsbRe9TsyMYCJS"
+    GRAFANA_PASSWORD:  "admin"
+    # Optional 3rd-party API keys are unset in trials — customer can
+    # add them through the platform's settings UI later.
+    ABUSEIPDB_API_KEY:     ""
+    OTX_API_KEY:           ""
+    THREATFOX_API_KEY:     ""
+    MALWAREBAZAAR_API_KEY: ""
+    VIRUSTOTAL_API_KEY:    ""
+
+# API: single replica, license enforcement on, license file mounted from
+# the host path the OVA-build pipeline writes via virt-customize.
+api:
+  replicaCount: 1
+  env:
+    LICENSE_REQUIRED:           "true"
+    LICENSE_FILE:               "/etc/ti-platform/license.jws"
+    LICENSE_HEARTBEAT_INTERVAL: "300"
+  extraVolumes:
+    - name: license
+      hostPath: { path: /etc/ti-platform, type: Directory }
+    - name: license-state
+      hostPath: { path: /var/lib/ti-platform, type: DirectoryOrCreate }
+  extraVolumeMounts:
+    - name: license
+      mountPath: /etc/ti-platform
+      readOnly: true
+    - name: license-state
+      mountPath: /var/lib/ti-platform
+      readOnly: false
+  service:
+    type: NodePort
+    nodePort: 30000
+
+# Frontend: stable NodePort so the customer hits a known port after import.
+# (NEXT_PUBLIC_* envs are baked in by `next build` and are IGNORED at
+# runtime — kept here as documentation only.  Real gating happens via
+# NEXT_PUBLIC_ADMIN_UI passed to `docker build`.)
+frontend:
+  replicaCount: 1
+  env: {}
+  service:
+    type: NodePort
+    nodePort: 30080
+
+# Sandbox: switch to k8s-jobs engine since k3s is full Kubernetes (no
+# docker socket available).  Same path the production deploy uses.
+sandbox:
+  enabled: true
+  replicaCount: 1
+  env:
+    SANDBOX_ENGINE:            "k8s-jobs"
+    SANDBOX_JOB_NAMESPACE:     "ti"
+    SANDBOX_ANALYSIS_IMAGE:    "ti-sandbox-analysis:latest"
+    SANDBOX_ANALYSIS_TIMEOUT:  "120"
+    LOCAL_SANDBOX_DYNAMIC:     "true"
+
+# Other services — single replica everything to fit in 4 vCPU / 8 GB RAM.
+# Each "modular" service carries `enabled` so the per-build overlay
+# (values-features.yaml, written by build-trial-ova.sh --features) can
+# flip it; non-modular ones (ingestion, logserver, frontend) stay on.
+ingestion:    { replicaCount: 1 }
+enrichment:   { enabled: true, replicaCount: 1 }
+correlation:  { enabled: true, replicaCount: 1 }
+icap:         { enabled: true, replicaCount: 1 }
+logserver:    { replicaCount: 1 }
+
+# NATS: single-node, JetStream off.
+# Background: the chart's default (3 replicas + JetStream cluster) cannot
+# reach quorum on a 1-node trial VM — pods stay 1/2 Ready and downstream
+# services 500.  See .tmp/fix_trial_v3_full.py for the original on-VM
+# workaround this overlay replaces.
+nats:
+  replicaCount: 1
+  config:
+    cluster:
+      enabled: false
+      replicas: 1
+    jetstream:
+      enabled: false
+  jetstream:
+    enabled: false
+
+# Ingress: the trial OVA exposes the frontend on a fixed NodePort so the
+# customer just needs to point a browser at  http://<vm-ip>:30080  after
+# import.  No DNS / cert / ingress-controller dance needed.
+ingress:
+  enabled: false   # NodePort is enough for a trial
+
+# ── Modular-OVA feature defaults ────────────────────────────────────────────
+# Operator-facing toggles consumed by build-trial-ova.sh --features.
+# Conservative defaults for a small trial; values-features.yaml (written
+# per-build) layers on top and wins.  Keep this list in sync with the
+# canonical set in build-trial-ova.sh and services/api/app/routers/trials.py.
+
+# Trim observability — Prometheus + Grafana add ~1 GB to the image and
+# trial customers don't usually care.  Re-enable via --features monitoring.
+monitoring:
+  enabled: false
+
+# MinIO is for production object storage.  Trial uses local-path PVC by
+# default; flip via --features minio.
+minio:
+  enabled: false
+
+# Vendor-rule snapshots (Palo Alto, Fortinet, etc.) for rule-coverage
+# evaluation; on by default — trial customers usually want to see this.
+vendor_audit:
+  enabled: true
+
+# Graph DB for attack-path correlation.  On by default; if the trial
+# host is tight on RAM, disable via --features list omitting "neo4j".
+neo4j:
+  enabled: true
+
+# Attack-path inference on top of neo4j.  Toggled separately so operators
+# can keep the graph store but skip the analytics layer.
+attack_paths:
+  enabled: true
