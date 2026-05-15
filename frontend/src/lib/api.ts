@@ -1204,3 +1204,38 @@ export async function getUrlIntelRecent(params: {
   if (params.limit !== undefined) q.set("limit", String(params.limit));
   return apiFetch<UrlIntelRecentPage>(`/url-intel/recent?${q.toString()}`);
 }
+
+// ── Admin: OVA Trial Builds ───────────────────────────────────────────────────
+
+/** Canonical feature keys for the modular OVA builder.
+ *  Must stay in sync with the backend (Unit 2) and helm flags. */
+export type TrialFeatureKey =
+  | "monitoring"
+  | "sandbox"
+  | "icap"
+  | "correlation"
+  | "enrichment"
+  | "vendor_audit"
+  | "minio"
+  | "neo4j"
+  | "attack_paths";
+
+export type TrialDurationDays = 15 | 30 | 45;
+
+export interface TrialBuildRequest {
+  customer:      string;
+  duration_days: TrialDurationDays;
+  features:      TrialFeatureKey[];
+}
+
+export interface TrialBuildResponse {
+  id:     string;
+  status?: string;
+}
+
+export function buildTrial(body: TrialBuildRequest): Promise<TrialBuildResponse> {
+  return apiFetch<TrialBuildResponse>("/admin/trials/build", {
+    method: "POST",
+    body:   JSON.stringify(body),
+  });
+}
