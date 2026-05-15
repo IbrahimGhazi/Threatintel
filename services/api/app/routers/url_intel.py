@@ -15,8 +15,12 @@ Endpoints:
   GET  /url-intel/indicator-tags       — tag distribution across active indicators
   GET  /url-intel/indicator-lifecycle  — last-N upsert/deactivate events
   GET  /url-intel/recent               — paginated recent predictions (+combined/indicator cols)
-  POST /url-intel/feedback             — attach ground-truth label
-  DELETE /url-intel/feedback/{id}      — clear a label
+  POST /url-intel/feedback             — DEPRECATED (returns 410). Labels
+                                          are now applied automatically by
+                                          the auto-curator background task
+                                          (app/services/url_intel_auto_curator.py).
+  DELETE /url-intel/feedback/{id}      — clear a label (so the auto-curator
+                                          re-labels on its next sweep)
   GET  /url-intel/content/{row_id}     — web content analysis bundle
   POST /url-intel/content/analyze      — queue a url for re-analysis
 """
@@ -715,28 +719,23 @@ async def recent(
 
 # ── Feedback (ground truth) ──────────────────────────────────────────────
 
-@router.post("/feedback", status_code=status.HTTP_200_OK)
+@router.post("/feedback")
 async def submit_feedback(
     body: FeedbackIn,
-    db: AsyncSession = Depends(get_db),
     _: str = Depends(require_api_key),
 ):
-    if body.ground_truth not in VALID_LABELS:
-        raise HTTPException(422, f"ground_truth must be one of {sorted(VALID_LABELS)}")
-    res = await db.execute(
-        text("""
-            UPDATE url_reputation
-               SET ground_truth = :gt, labeled_at = now(), labeled_by = :by
-             WHERE url = :url
-         RETURNING id, url, prediction, ground_truth
-        """),
-        {"gt": body.ground_truth, "by": body.labeled_by, "url": body.url},
+    # 2026-05-15 — deprecated. Aggressive auto-curation now labels every
+    # unlabeled url_reputation row from its combined verdict (see
+    # app/services/url_intel_auto_curator.py). Mistakes are corrected by
+    # clearing the label and letting the next sweep re-label.
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Manual feedback is deprecated. Labels are now applied "
+            "automatically by the auto-curator. Use "
+            "DELETE /url-intel/feedback/{row_id} to clear a wrong label."
+        ),
     )
-    row = res.mappings().first()
-    await db.commit()
-    if row is None:
-        raise HTTPException(404, f"URL {body.url!r} not found in url_reputation")
-    return {"status": "ok", **dict(row)}
 
 
 @router.delete("/feedback/{row_id}", status_code=status.HTTP_200_OK)

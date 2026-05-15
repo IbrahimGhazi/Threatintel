@@ -283,12 +283,24 @@ async def lifespan(app: FastAPI):
     # Start log retention cleanup loop
     retention_task = asyncio.create_task(_retention_cleanup_loop())
 
+    # Start url-intel auto-curator (aggressive policy: auto-label every
+    # unlabeled url_reputation row using its combined verdict as ground
+    # truth — no human labeling needed). 2026-05-15.
+    from app.services.url_intel_auto_curator import _auto_curator_loop
+    curator_task = asyncio.create_task(_auto_curator_loop())
+
     yield
 
     # Cleanup
     retention_task.cancel()
     try:
         await retention_task
+    except asyncio.CancelledError:
+        pass
+
+    curator_task.cancel()
+    try:
+        await curator_task
     except asyncio.CancelledError:
         pass
 

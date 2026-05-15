@@ -3,8 +3,8 @@
 import { Fragment, useState, useMemo } from "react";
 import useSWR, { mutate as globalMutate } from "swr";
 import {
-  Link2, ShieldCheck, ShieldAlert, AlertTriangle, Gauge, CheckCircle, XCircle,
-  RefreshCw, Search, Target, Database, Filter, TrendingUp, Trash2, Activity,
+  Link2, ShieldCheck, Gauge, CheckCircle, XCircle,
+  RefreshCw, Search, Target, Database, Filter, TrendingUp, Activity,
   Globe, FlaskConical, X, Code2, Network, ExternalLink, Shuffle,
   ShieldAlert as ShieldAlertIcon, FileCode2, Link as LinkIcon, DownloadCloud,
   Eye, EyeOff, Fingerprint, AlertOctagon, Layers, Workflow, Sliders, Tag,
@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import {
   getUrlIntelStats, getUrlIntelHistogram, getUrlIntelAccuracy,
-  getUrlIntelRecent, submitUrlIntelFeedback, clearUrlIntelFeedback,
+  getUrlIntelRecent, clearUrlIntelFeedback,
   getIndicatorCacheStats,
   getUrlContentAnalysis, requestUrlContentAnalysis,
   getUrlIntelModelInfo, getUrlIntelCombinedHistogram, getUrlIntelHeatmap,
@@ -430,46 +430,38 @@ function TagDonut({ data }: { data: UrlIntelIndicatorTags }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Label buttons
+// Label pill (read-only — manual buttons removed 2026-05-15)
 // ═══════════════════════════════════════════════════════════════════════════
 
-function LabelButtons({ row, onChanged }: {
+// The manual benign/suspicious/malicious dropdown is gone. Labels are
+// written automatically by the auto-curator background task (see
+// services/api/app/services/url_intel_auto_curator.py). All this
+// component shows now is the current label as a read-only pill, plus a
+// small [clear] link if the operator wants to wipe a wrong label so the
+// next sweep re-labels from the current combined verdict.
+function LabelPill({ row, onChanged }: {
   row: UrlIntelRecentRow; onChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const label = async (lbl: UrlVerdict) => {
-    setBusy(true);
-    try { await submitUrlIntelFeedback(row.url, lbl); onChanged(); }
-    finally { setBusy(false); }
-  };
   const clear = async () => {
     setBusy(true);
     try { await clearUrlIntelFeedback(row.id); onChanged(); }
     finally { setBusy(false); }
   };
+  if (!row.ground_truth) {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-border bg-bg-elevated text-text-muted text-[10px] tracking-tight italic">
+        auto-pending
+      </span>
+    );
+  }
   return (
-    <div className="flex items-center gap-1">
-      <button onClick={() => label("benign")} disabled={busy} title="Label as benign"
-              className={clsx("btn btn-ghost border border-border px-1.5 py-0.5 text-2xs",
-                row.ground_truth === "benign" && "bg-emerald-500/15 text-emerald-400 border-emerald-500/30")}>
-        <ShieldCheck className="w-3 h-3" />
+    <div className="flex items-center gap-1.5">
+      <Pill tone={row.ground_truth}>{row.ground_truth}</Pill>
+      <button onClick={clear} disabled={busy} title="Clear label so the auto-curator re-labels"
+              className="text-text-muted hover:text-text-secondary underline decoration-dotted underline-offset-2 text-[10px] disabled:opacity-50">
+        clear
       </button>
-      <button onClick={() => label("suspicious")} disabled={busy} title="Label as suspicious"
-              className={clsx("btn btn-ghost border border-border px-1.5 py-0.5 text-2xs",
-                row.ground_truth === "suspicious" && "bg-amber-500/15 text-amber-400 border-amber-500/30")}>
-        <AlertTriangle className="w-3 h-3" />
-      </button>
-      <button onClick={() => label("malicious")} disabled={busy} title="Label as malicious"
-              className={clsx("btn btn-ghost border border-border px-1.5 py-0.5 text-2xs",
-                row.ground_truth === "malicious" && "bg-red-500/15 text-red-400 border-red-500/30")}>
-        <ShieldAlert className="w-3 h-3" />
-      </button>
-      {row.ground_truth && (
-        <button onClick={clear} disabled={busy} title="Clear label"
-                className="btn btn-ghost border border-border px-1.5 py-0.5 text-2xs">
-          <Trash2 className="w-3 h-3" />
-        </button>
-      )}
     </div>
   );
 }
@@ -1012,7 +1004,7 @@ export default function UrlIntelPage() {
                       {r.ground_truth ? <Pill tone={r.ground_truth}>{r.ground_truth}</Pill> : <span className="text-text-muted">—</span>}
                     </td>
                     <td className="py-2 px-3">
-                      <LabelButtons row={r} onChanged={() => { mRecent(); mStats(); }} />
+                      <LabelPill row={r} onChanged={() => { mRecent(); mStats(); }} />
                     </td>
                   </tr>
                 );
