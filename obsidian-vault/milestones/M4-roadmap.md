@@ -15,6 +15,10 @@ Open. Things floated but not yet planned in detail.
 - **Time-of-day decomposition** — current features include hour_sin/cos, but the model treats all hours of one host as one entity. Maybe split: weekday-business-hours vs nights/weekends.
 - **Embedding-aware suggestion engine** — for each suggestion, show the source-IP's nearest-neighbour hosts to help the analyst judge.
 
+## EDR integration
+
+- **Endpoint EDRs (Cortex XDR + Trend Vision One)** — push our IOCs to EDR blocklists, pull EDR detections back as alerts, and drive endpoint isolate/block from `correlation`. Designed in [[milestones/M5-edr-integration]] (approach recorded in [[decisions/2026-07-03-edr-integration-approach]]). Phase 1 (outbound push) is the natural next build.
+
 ## Far
 
 - **Federated learning across customer banks** — same architecture, hashed source identifiers, central learner training on aggregated features.

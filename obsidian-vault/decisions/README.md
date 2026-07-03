@@ -19,3 +19,4 @@ One file per decision. Filename `YYYY-MM-DD-short-slug.md`. Template:
 
 - [[decisions/2026-04-24-floatarray-vs-pgvector]]
 - [[decisions/2026-04-24-far-near-cos-thresholds]]
+- [[decisions/2026-07-03-edr-integration-approach]]

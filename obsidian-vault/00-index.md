@@ -32,6 +32,7 @@ Defensive threat-intelligence platform protecting banks. This vault is the singl
 - [[milestones/M1-reputation]] — weighted reputation scorer ✅
 - [[milestones/M2-enforce]] — shadow → enforce flip ✅
 - [[milestones/M3-embeddings]] — host/destination autoencoder vectors ✅ *(latest)*
+- [[milestones/M5-edr-integration]] — EDR push/pull/response (Cortex XDR + Trend Vision One) 📝 proposed
 - [[milestones/M4-roadmap]] — what's next
 
 ## 🔧 Runbooks
